@@ -12,6 +12,7 @@ import com.example.audiometer.AudioMeterApplication
 import com.example.audiometer.data.ValidationRecord
 import com.example.audiometer.service.AudioAnalysisService
 import com.example.audiometer.utils.AnalysisStateHolder
+import com.example.audiometer.utils.MFCCMatcher
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -180,8 +181,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val matches = mutableListOf<OfflineAnalysisResult>()
         val extractor = com.example.audiometer.utils.AudioFeatureExtractor()
         val frameSize = 1024
+        val hopLength = 256  // 与 Python 一致的帧移
+        val SAMPLE_RATE = 16000  // 使用 16kHz
 
-        // 1. Load Target Fingerprint
+        // 1. Load Target as MFCC Sequence
         val targetPath = configRepo.sampleAudioPath
         if (targetPath.isNullOrEmpty()) {
             offlineResultMessage = "No sample audio set"
@@ -197,14 +200,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
         offlineWavInfo = wavInfo
 
-        // Load target
+        // Load target and extract MFCC sequence
         val targetSamples = com.example.audiometer.utils.WavUtil.loadWav(targetFile)
         if (targetSamples.isEmpty()) {
             offlineResultMessage = "Could not load sample"
             return@withContext Pair(wavInfo, emptyList())
         }
+        
         val targetFloats = FloatArray(targetSamples.size) { targetSamples[it].toFloat() }
-        val targetFingerprint = extractor.computeAverageMFCC(targetFloats, frameSize, (wavInfo?.sampleRate ?: 44100).toFloat())
+        
+        // 提取样本的完整 MFCC 序列
+        val targetMFCCSequence = mutableListOf<FloatArray>()
+        var pos = 0
+        while (pos + frameSize <= targetFloats.size) {
+            val chunk = targetFloats.sliceArray(pos until pos + frameSize)
+            val mfcc = extractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
+            // 删除 C0 与 Python 对齐
+            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+            targetMFCCSequence.add(mfccWithoutC0)
+            pos += frameSize
+        }
+        
+        val sampleFrameCount = targetMFCCSequence.size
+        if (sampleFrameCount == 0) {
+            offlineResultMessage = "Sample too short"
+            return@withContext Pair(wavInfo, emptyList())
+        }
 
         // 2. Load Input File
         val inputSamples = com.example.audiometer.utils.WavUtil.loadWav(file)
@@ -212,42 +233,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             offlineResultMessage = "Could not load analysis file"
             return@withContext Pair(wavInfo, emptyList())
         }
+        
+        val inputFloats = FloatArray(inputSamples.size) { inputSamples[it].toFloat() }
 
-        // 3. Sliding Window Analysis
-        val step = frameSize
-        var pos = 0
-        val tempBuffer = FloatArray(frameSize)
-        val threshold = configRepo.similarityThreshold
-        val sampleRate = wavInfo?.sampleRate ?: 44100
-
-        val totalSamples = inputSamples.size
+        // 3. 滑动窗口分析（与 Python 一致）
+        val threshold = 100f - configRepo.similarityThreshold  // 转换为欧氏距离阈值
+        val totalSamples = inputFloats.size
         var lastProgress = 0f
-
+        
+        // 提取输入文件的 MFCC 缓冲区
+        val mfccBuffer = mutableListOf<FloatArray>()
+        pos = 0
+        var frameIdx = 0
+        
         while (pos + frameSize <= totalSamples) {
-            // Update progress every roughly 1%
+            // Update progress
             val currentProgress = pos.toFloat() / totalSamples
             if (currentProgress - lastProgress >= 0.01) {
                 onProgress(currentProgress)
                 lastProgress = currentProgress
             }
 
-            // Convert to float
-            for (i in 0 until frameSize) {
-                tempBuffer[i] = inputSamples[pos + i].toFloat()
-            }
-
-            val currentMFCC = extractor.calculateMFCC(tempBuffer, sampleRate.toFloat())
-            val similarity = extractor.calculateSimilarity(currentMFCC, targetFingerprint)
-
-            if (similarity >= threshold) {
-                // Determine time (in ms)
-                val timeMs = (pos.toLong() * 1000) / sampleRate
-                matches.add(OfflineAnalysisResult(timeMs, similarity, threshold))
-                // Skip ahead to avoid multiple matches for same sound
-                pos += sampleRate // Skip 1 sec
+            // 提取 MFCC
+            val chunk = inputFloats.sliceArray(pos until pos + frameSize)
+            val mfcc = extractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
+            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+            
+            mfccBuffer.add(mfccWithoutC0)
+            
+            // 当缓冲区积累足够帧时，进行序列匹配
+            if (mfccBuffer.size >= sampleFrameCount) {
+                val testSequence = mfccBuffer.takeLast(sampleFrameCount)
+                
+                // 计算平均欧氏距离
+                var totalDistance = 0f
+                for (i in 0 until sampleFrameCount) {
+                    totalDistance += MFCCMatcher.calculateEuclideanDistance(
+                        testSequence[i],
+                        targetMFCCSequence[i]
+                    )
+                }
+                val avgDistance = totalDistance / sampleFrameCount
+                
+                // 转换为相似度显示
+                val similarity = maxOf(0f, 100f - avgDistance * 2)
+                
+                if (avgDistance < threshold) {
+                    val timeMs = (pos.toLong() * 1000) / SAMPLE_RATE
+                    matches.add(OfflineAnalysisResult(timeMs, similarity, configRepo.similarityThreshold))
+                    
+                    // 跳过一段避免重复匹配
+                    pos += sampleFrameCount * frameSize
+                    mfccBuffer.clear()
+                } else {
+                    pos += hopLength
+                    // 保持缓冲区大小
+                    if (mfccBuffer.size > sampleFrameCount) {
+                        mfccBuffer.removeAt(0)
+                    }
+                }
             } else {
-                pos += step
+                pos += hopLength
             }
+            
+            frameIdx++
         }
 
         onProgress(1.0f)

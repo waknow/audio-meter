@@ -9,8 +9,9 @@ class AudioFeatureExtractor {
     /**
      * Calculates MFCC features for a given audio buffer.
      * 适配 TarsosDSP 2.5 API：手动调用各个处理步骤
+     * 注意：返回的 MFCC 包含 C0，调用者需要根据需求决定是否删除
      */
-    fun calculateMFCC(signal: FloatArray, sampleRate: Float = 44100f): FloatArray {
+    fun calculateMFCC(signal: FloatArray, sampleRate: Float = 16000f): FloatArray {
         val bufferSize = signal.size
         val amountOfCepstralCoefficients = 13
         val amountOfMelFilters = 40

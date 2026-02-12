@@ -18,6 +18,7 @@ import com.example.audiometer.data.ConfigRepository
 import com.example.audiometer.data.ValidationRecord
 import com.example.audiometer.utils.AnalysisStateHolder
 import com.example.audiometer.utils.AudioFeatureExtractor
+import com.example.audiometer.utils.MFCCMatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,14 +36,20 @@ class AudioAnalysisService : Service() {
 
     private lateinit var configRepo: ConfigRepository
 
-    // Analysis
-    private var targetFingerprint: FloatArray? = null
+    // Analysis - 保存样本的完整 MFCC 序列（而非平均值）
+    private var targetMFCCSequence: List<FloatArray>? = null
+    private var sampleFrameCount: Int = 0
     private val FRAME_SIZE = 1024
+    private val HOP_LENGTH = 256  // 与 Python 一致的帧移
+    
+    // 滑动窗口缓冲区 - 存储最近的 MFCC 帧
+    private val mfccBuffer = mutableListOf<FloatArray>()
+    private val maxBufferSize = 100  // 最多缓存100帧
 
     companion object {
         const val CHANNEL_ID = "AudioMeterChannel"
         const val NOTIFICATION_ID = 1
-        const val SAMPLE_RATE = 44100
+        const val SAMPLE_RATE = 16000  // 改为 16000Hz 与 Python 对齐
         const val MAX_FILES = 20
     }
 
@@ -85,6 +92,9 @@ class AudioAnalysisService : Service() {
         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
+    /**
+     * 加载样本的完整 MFCC 序列（保留时序信息）
+     */
     private fun loadSampleFingerprint() {
         val path = configRepo.sampleAudioPath
         if (path.isNullOrEmpty()) {
@@ -101,10 +111,29 @@ class AudioAnalysisService : Service() {
             if (samples.isEmpty()) return
 
             val floats = FloatArray(samples.size) { samples[it].toFloat() }
-            targetFingerprint = featureExtractor.computeAverageMFCC(floats, FRAME_SIZE, SAMPLE_RATE.toFloat())
-            AnalysisStateHolder.addLog("Sample Loaded: ${file.name}")
+            
+            // 提取完整的 MFCC 序列（不计算平均值）
+            val mfccSequence = mutableListOf<FloatArray>()
+            var pos = 0
+            while (pos + FRAME_SIZE <= floats.size) {
+                val chunk = floats.sliceArray(pos until pos + FRAME_SIZE)
+                val mfcc = featureExtractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
+                // 删除 C0（与 Python 对齐）
+                val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+                mfccSequence.add(mfccWithoutC0)
+                pos += FRAME_SIZE  // 无重叠提取
+            }
+            
+            targetMFCCSequence = mfccSequence
+            sampleFrameCount = mfccSequence.size
+            
+            val durationMs = (floats.size * 1000.0 / SAMPLE_RATE).toInt()
+            AnalysisStateHolder.addLog(
+                "Sample Loaded: ${file.name} (${sampleFrameCount} frames, ${durationMs}ms)"
+            )
         } catch (e: Exception) {
             AnalysisStateHolder.addLog("Failed to load sample: ${e.message}")
+            e.printStackTrace()
         }
     }
 
@@ -138,35 +167,62 @@ class AudioAnalysisService : Service() {
                 AnalysisStateHolder.addLog("Recording started")
 
                 val buffer = ShortArray(bufferSize)
-
                 var lastAlertTime = 0L
+                var audioBufferPos = 0
 
                 while (isRunning) {
                     val readResult = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (readResult >= FRAME_SIZE) {
-                        // Extract latest window for MFCC from end
-                        val floatChunk = FloatArray(FRAME_SIZE)
-                        val offset = readResult - FRAME_SIZE
-                        for (i in 0 until FRAME_SIZE) {
-                            floatChunk[i] = buffer[offset + i].toFloat()
-                        }
-
-                        val currentMFCC = featureExtractor.calculateMFCC(floatChunk, SAMPLE_RATE.toFloat())
-
-                        val similarity = if (targetFingerprint != null) {
-                            featureExtractor.calculateSimilarity(currentMFCC, targetFingerprint!!)
-                        } else {
-                            0f
-                        }
-
-                        AnalysisStateHolder.updateSimilarity(similarity)
-
-                        if (similarity >= configRepo.similarityThreshold) {
-                            val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
-                                lastAlertTime = currentTime
-                                handleAlert(similarity, buffer.sliceArray(0 until readResult))
+                        // 按 HOP_LENGTH 步长处理多个帧
+                        var offset = 0
+                        while (offset + FRAME_SIZE <= readResult) {
+                            val floatChunk = FloatArray(FRAME_SIZE)
+                            for (i in 0 until FRAME_SIZE) {
+                                floatChunk[i] = buffer[offset + i].toFloat()
                             }
+
+                            // 计算 MFCC 并删除 C0
+                            val mfcc = featureExtractor.calculateMFCC(floatChunk, SAMPLE_RATE.toFloat())
+                            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+                            
+                            // 添加到滑动窗口缓冲区
+                            mfccBuffer.add(mfccWithoutC0)
+                            if (mfccBuffer.size > maxBufferSize) {
+                                mfccBuffer.removeAt(0)
+                            }
+
+                            // 当缓冲区积累足够帧时，进行序列匹配
+                            val distance = if (targetMFCCSequence != null && mfccBuffer.size >= sampleFrameCount) {
+                                calculateSequenceDistance(
+                                    mfccBuffer.takeLast(sampleFrameCount),
+                                    targetMFCCSequence!!
+                                )
+                            } else {
+                                Float.MAX_VALUE
+                            }
+
+                            // 转换为相似度百分比显示（距离越小越好）
+                            val similarity = if (distance < Float.MAX_VALUE) {
+                                // 映射到 0-100，阈值 35 对应约 65 分
+                                maxOf(0f, 100f - distance * 2)
+                            } else {
+                                0f
+                            }
+                            
+                            AnalysisStateHolder.updateSimilarity(similarity)
+
+                            // 使用欧氏距离阈值判断（默认 35）
+                            val threshold = 100f - configRepo.similarityThreshold  // 转换阈值方向
+                            if (distance < threshold) {
+                                val currentTime = System.currentTimeMillis()
+                                if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
+                                    lastAlertTime = currentTime
+                                    handleAlert(similarity, buffer.sliceArray(0 until readResult))
+                                }
+                            }
+                            
+                            offset += HOP_LENGTH
+                            audioBufferPos += HOP_LENGTH
                         }
                     }
                 }
@@ -250,9 +306,27 @@ class AudioAnalysisService : Service() {
     }
 
 
+    /**
+     * 计算 MFCC 序列间的平均欧氏距离（与 Python 实现一致）
+     */
+    private fun calculateSequenceDistance(
+        sequence1: List<FloatArray>,
+        sequence2: List<FloatArray>
+    ): Float {
+        if (sequence1.size != sequence2.size) return Float.MAX_VALUE
+        
+        var totalDistance = 0f
+        for (i in sequence1.indices) {
+            totalDistance += MFCCMatcher.calculateEuclideanDistance(sequence1[i], sequence2[i])
+        }
+        
+        return totalDistance / sequence1.size
+    }
+
     private fun stopAnalysis() {
         isRunning = false
         AnalysisStateHolder.setRunning(false)
+        mfccBuffer.clear()
         try {
             audioRecord?.stop()
             audioRecord?.release()
