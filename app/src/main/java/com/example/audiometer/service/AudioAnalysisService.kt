@@ -1,21 +1,18 @@
 package com.example.audiometer.service
 
-import android.app.Notification
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.audiometer.AudioMeterApplication
-import com.example.audiometer.MainActivity
 import com.example.audiometer.R
 import com.example.audiometer.data.ConfigRepository
 import com.example.audiometer.data.ValidationRecord
@@ -27,7 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
-import kotlin.math.log
+import java.util.Locale
 
 class AudioAnalysisService : Service() {
 
@@ -40,7 +37,7 @@ class AudioAnalysisService : Service() {
 
     // Analysis
     private var targetFingerprint: FloatArray? = null
-    private val FFT_SIZE = 512
+    private val FRAME_SIZE = 1024
 
     companion object {
         const val CHANNEL_ID = "AudioMeterChannel"
@@ -78,24 +75,14 @@ class AudioAnalysisService : Service() {
     }
 
     private fun startForegroundService() {
-        val stopIntent = Intent(this, AudioAnalysisService::class.java).apply {
-            action = "STOP"
-        }
-        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Audio Meter Running")
             .setContentText("Analyzing audio in background...")
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
     private fun loadSampleFingerprint() {
@@ -114,13 +101,14 @@ class AudioAnalysisService : Service() {
             if (samples.isEmpty()) return
 
             val floats = FloatArray(samples.size) { samples[it].toFloat() }
-            targetFingerprint = featureExtractor.computeAverageSpectrum(floats, FFT_SIZE)
+            targetFingerprint = featureExtractor.computeAverageMFCC(floats, FRAME_SIZE, SAMPLE_RATE.toFloat())
             AnalysisStateHolder.addLog("Sample Loaded: ${file.name}")
         } catch (e: Exception) {
             AnalysisStateHolder.addLog("Failed to load sample: ${e.message}")
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun startAnalysis() {
         isRunning = true
         AnalysisStateHolder.setRunning(true)
@@ -135,7 +123,7 @@ class AudioAnalysisService : Service() {
                         SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT
-                    ), FFT_SIZE * 2
+                    ), FRAME_SIZE * 2
                 )
 
                 audioRecord = AudioRecord(
@@ -155,18 +143,18 @@ class AudioAnalysisService : Service() {
 
                 while (isRunning) {
                     val readResult = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (readResult >= FFT_SIZE) {
-                        // Extract latest window for FFT from end
-                        val floatChunk = FloatArray(FFT_SIZE)
-                        val offset = readResult - FFT_SIZE
-                        for (i in 0 until FFT_SIZE) {
+                    if (readResult >= FRAME_SIZE) {
+                        // Extract latest window for MFCC from end
+                        val floatChunk = FloatArray(FRAME_SIZE)
+                        val offset = readResult - FRAME_SIZE
+                        for (i in 0 until FRAME_SIZE) {
                             floatChunk[i] = buffer[offset + i].toFloat()
                         }
 
-                        val currentSpec = featureExtractor.calculateFFT(floatChunk)
+                        val currentMFCC = featureExtractor.calculateMFCC(floatChunk, SAMPLE_RATE.toFloat())
 
                         val similarity = if (targetFingerprint != null) {
-                            featureExtractor.calculateSimilarity(currentSpec, targetFingerprint!!)
+                            featureExtractor.calculateSimilarity(currentMFCC, targetFingerprint!!)
                         } else {
                             0f
                         }
@@ -191,7 +179,7 @@ class AudioAnalysisService : Service() {
 
     private fun handleAlert(similarity: Float, audioData: ShortArray) {
         serviceScope.launch {
-            AnalysisStateHolder.addLog("Alert! Match: ${String.format("%.1f", similarity)}%")
+            AnalysisStateHolder.addLog("Alert! Match: ${String.format(Locale.US, "%.1f", similarity)}%")
 
             cleanupOldFiles()
 
@@ -276,19 +264,15 @@ class AudioAnalysisService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "Audio Meter Channel"
-            val descriptionText = "Channel for Audio Meter Service"
-            val importance = NotificationManager.IMPORTANCE_LOW
-            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
-                description = descriptionText
-            }
-            val notificationManager: NotificationManager =
-                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
+        val name = "Audio Meter Channel"
+        val descriptionText = "Channel for Audio Meter Service"
+        val importance = NotificationManager.IMPORTANCE_LOW
+        val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
+            description = descriptionText
         }
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.createNotificationChannel(channel)
     }
 }
-
 
 

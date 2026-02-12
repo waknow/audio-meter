@@ -7,17 +7,14 @@ plugins {
 
 android {
     namespace = "com.example.audiometer"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.audiometer"
         minSdk = 33
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -67,6 +64,10 @@ dependencies {
 
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
+    
+    // TarsosDSP 音频处理库（从 Maven 仓库获取，不再使用损坏的本地 JAR）
+    implementation("be.tarsos.dsp:core:2.5")
+    
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

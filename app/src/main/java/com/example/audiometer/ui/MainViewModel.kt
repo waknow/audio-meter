@@ -24,7 +24,6 @@ data class OfflineAnalysisResult(
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val context = application.applicationContext
     private val db = (application as AudioMeterApplication).database
     private val configRepo = (application as AudioMeterApplication).configRepository
 
@@ -131,7 +130,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (mediaPlayer?.isPlaying == true) {
                     try {
                         mediaPlayer?.pause()
-                    } catch (e: Exception) { /* ignore */ }
+                    } catch (_: Exception) { /* ignore */ }
                 }
             }
         } catch (e: Exception) {
@@ -161,6 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleService() {
+        val context = getApplication<AudioMeterApplication>()
         if (isRunning.value) {
             val intent = Intent(context, AudioAnalysisService::class.java).apply {
                 action = "STOP"
@@ -179,7 +179,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentAnalyzedFile = file
         val matches = mutableListOf<OfflineAnalysisResult>()
         val extractor = com.example.audiometer.utils.AudioFeatureExtractor()
-        val fftSize = 512
+        val frameSize = 1024
 
         // 1. Load Target Fingerprint
         val targetPath = configRepo.sampleAudioPath
@@ -204,7 +204,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return@withContext Pair(wavInfo, emptyList())
         }
         val targetFloats = FloatArray(targetSamples.size) { targetSamples[it].toFloat() }
-        val targetFingerprint = extractor.computeAverageSpectrum(targetFloats, fftSize)
+        val targetFingerprint = extractor.computeAverageMFCC(targetFloats, frameSize, (wavInfo?.sampleRate ?: 44100).toFloat())
 
         // 2. Load Input File
         val inputSamples = com.example.audiometer.utils.WavUtil.loadWav(file)
@@ -214,16 +214,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // 3. Sliding Window Analysis
-        val step = fftSize
+        val step = frameSize
         var pos = 0
-        val tempBuffer = FloatArray(fftSize)
+        val tempBuffer = FloatArray(frameSize)
         val threshold = configRepo.similarityThreshold
         val sampleRate = wavInfo?.sampleRate ?: 44100
 
         val totalSamples = inputSamples.size
         var lastProgress = 0f
 
-        while (pos + fftSize <= totalSamples) {
+        while (pos + frameSize <= totalSamples) {
             // Update progress every roughly 1%
             val currentProgress = pos.toFloat() / totalSamples
             if (currentProgress - lastProgress >= 0.01) {
@@ -232,12 +232,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             // Convert to float
-            for (i in 0 until fftSize) {
+            for (i in 0 until frameSize) {
                 tempBuffer[i] = inputSamples[pos + i].toFloat()
             }
 
-            val spectrum = extractor.calculateFFT(tempBuffer)
-            val similarity = extractor.calculateSimilarity(spectrum, targetFingerprint)
+            val currentMFCC = extractor.calculateMFCC(tempBuffer, sampleRate.toFloat())
+            val similarity = extractor.calculateSimilarity(currentMFCC, targetFingerprint)
 
             if (similarity >= threshold) {
                 // Determine time (in ms)

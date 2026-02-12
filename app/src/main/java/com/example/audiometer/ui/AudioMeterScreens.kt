@@ -2,7 +2,6 @@ package com.example.audiometer.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -412,6 +411,7 @@ class SampleRecorder(val outputFile: File) {
     private var isRecording = false
     private val scope = CoroutineScope(Dispatchers.IO)
 
+    @SuppressLint("MissingPermission")
     fun startRecording() {
         val sampleRate = 44100
         val bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
