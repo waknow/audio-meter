@@ -26,7 +26,9 @@ class MFCCMatchingTest {
      */
     @Test
     fun testMatchingAccuracy() {
-        val projectRoot = System.getProperty("user.dir").replace("/app", "")
+        // Fix for nullable property access
+        val userDir = System.getProperty("user.dir") ?: "."
+        val projectRoot = userDir.replace("/app", "")
         val sampleFile = File(projectRoot, "sample.wav")
         val longFile = File(projectRoot, "long-39.wav")
 
@@ -41,6 +43,13 @@ class MFCCMatchingTest {
         println("🎵 MFCC 匹配测试 - 验证识别准确性")
         println("=".repeat(70))
 
+        // 使用新版 WavUtil 获取信息
+        val sampleInfo = WavUtil.getWavInfo(sampleFile)
+        val longInfo = WavUtil.getWavInfo(longFile)
+        
+        println("📝 样本信息: ${sampleInfo?.sampleRate}Hz, ${sampleInfo?.durationMs}ms, ${sampleInfo?.channels}ch")
+        println("📝 长音频信息: ${longInfo?.sampleRate}Hz, ${longInfo?.durationMs}ms, ${longInfo?.channels}ch")
+
         // 加载音频
         val sampleData = WavUtil.loadWav(sampleFile)
         val longData = WavUtil.loadWav(longFile)
@@ -48,17 +57,23 @@ class MFCCMatchingTest {
         val sampleFloats = FloatArray(sampleData.size) { sampleData[it].toFloat() }
         val longFloats = FloatArray(longData.size) { longData[it].toFloat() }
 
-        println("📊 样本长度: ${sampleData.size} samples (${sampleFile.name})")
-        println("📊 长音频长度: ${longData.size} samples (${longFile.name})")
+        println("📊 样本载入: ${sampleData.size} samples")
+        println("📊 长音频载入: ${longData.size} samples")
 
-        // 测试不同参数组合
-        testWithParameters(sampleFloats, longFloats, "当前实现 (44100Hz)", 44100f, 35f)
-        testWithParameters(sampleFloats, longFloats, "Python 对齐 (16000Hz)", 16000f, 35f)
-        testWithParameters(sampleFloats, longFloats, "调整阈值 (16000Hz, threshold=25)", 16000f, 25f)
-        testWithParameters(sampleFloats, longFloats, "调整阈值 (16000Hz, threshold=45)", 16000f, 45f)
+        // 1. 使用自动识别的采样率测试
+        val autoRate = longInfo?.sampleRate?.toFloat() ?: 16000f
+        testWithParameters(sampleFloats, longFloats, "自动识别采样率 ($autoRate Hz)", autoRate, 35f)
 
-        println("=".repeat(70))
-        println("✅ 测试完成！请查看上述结果选择最佳参数配置")
+        // 2. 强制使用 16000Hz (Python 对齐版)
+        testWithParameters(sampleFloats, longFloats, "Python 对齐 (强制 16000Hz)", 16000f, 35f)
+
+        // 3. 针对 48000Hz 的高采样率测试 (如果文件是 48k)
+        if (autoRate == 48000f) {
+            testWithParameters(sampleFloats, longFloats, "48k 高采样率测试", 48000f, 40f)
+        }
+
+        println("\n" + "=".repeat(70))
+        println("✅ 测试完成！")
     }
 
     private fun testWithParameters(
@@ -80,8 +95,8 @@ class MFCCMatchingTest {
             longAudio = longFloats,
             sampleAudio = sampleFloats,
             sampleRate = sampleRate,
-            frameSize = 1024,
-            hopLength = 256,
+            frameSize = 2048,
+            hopLength = 512,
             threshold = threshold
         )
         

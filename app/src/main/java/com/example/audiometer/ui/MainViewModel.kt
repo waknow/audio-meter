@@ -39,11 +39,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     var isSamplePlaying by mutableStateOf(false)
         internal set
+    
+    var isOfflineFilePlaying by mutableStateOf(false)
+        internal set
 
     // Offline Results persistence
     var offlineResults by mutableStateOf<List<OfflineAnalysisResult>>(emptyList())
         internal set
     var offlineWavInfo by mutableStateOf<com.example.audiometer.utils.WavInfo?>(null)
+        internal set
+    var sampleWavInfo by mutableStateOf<com.example.audiometer.utils.WavInfo?>(null)
         internal set
     var offlineResultMessage by mutableStateOf("Select a file to analyze")
         internal set
@@ -79,8 +84,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val path = sampleAudioPath ?: return
+        val path = sampleAudioPath
+        if (path.isNullOrEmpty()) {
+            android.util.Log.e("MainViewModel", "Sample audio path is null or empty")
+            return
+        }
+        
+        val file = java.io.File(path)
+        if (!file.exists()) {
+            android.util.Log.e("MainViewModel", "Sample file not found: $path")
+            return
+        }
+        
         try {
+            android.util.Log.d("MainViewModel", "Playing sample file: $path")
             isSamplePlaying = true
             samplePlayer = MediaPlayer().apply {
                 setDataSource(path)
@@ -93,6 +110,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         } catch (e: Exception) {
+            android.util.Log.e("MainViewModel", "Error playing sample audio", e)
             e.printStackTrace()
             isSamplePlaying = false
         }
@@ -111,31 +129,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Stop any existing playback
         stopPlayback()
 
+        if (!file.exists()) {
+            android.util.Log.e("MainViewModel", "File not found for playback: ${file.absolutePath}")
+            return
+        }
+
         try {
+            val startMs = (timestamp - 1000).coerceAtLeast(0)
+            android.util.Log.d("MainViewModel", "Playing clip: ${file.name} from ${startMs}ms (Match at ${timestamp}ms)")
+            
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(file.absolutePath)
+                setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
+                setOnErrorListener { _, what, extra ->
+                    android.util.Log.e("MainViewModel", "MediaPlayer error: what=$what, extra=$extra")
+                    true
+                }
                 prepare()
-
-                val startMs = (timestamp - 1000).coerceAtLeast(0)
                 seekTo(startMs.toInt())
-                start() // Start immediately
-
-                // Stop after 2 seconds (or less if at start)
-                // We use a handler or coroutine to stop it?
-                // For simplicity, let's just use a coroutine in viewModelScope
+                start()
             }
 
             viewModelScope.launch {
-                // Wait for 2 seconds then stop
-                kotlinx.coroutines.delay(2000)
+                // Play for 3 seconds instead of 2 to give more context
+                kotlinx.coroutines.delay(3000)
                 if (mediaPlayer?.isPlaying == true) {
                     try {
+                        android.util.Log.d("MainViewModel", "Clip playback finished (3s limit)")
                         mediaPlayer?.pause()
                     } catch (_: Exception) { /* ignore */ }
                 }
             }
         } catch (e: Exception) {
+            android.util.Log.e("MainViewModel", "Error playing clip", e)
             e.printStackTrace()
+        }
+    }
+    
+    fun playOfflineFile() {
+        if (mediaPlayer?.isPlaying == true) {
+            stopPlayback()
+            return
+        }
+        
+        val file = currentAnalyzedFile
+        if (file == null) {
+            android.util.Log.e("MainViewModel", "No offline file to play")
+            return
+        }
+        
+        if (!file.exists()) {
+            android.util.Log.e("MainViewModel", "Offline file not found: ${file.absolutePath}")
+            return
+        }
+        
+        try {
+            android.util.Log.d("MainViewModel", "Playing offline file: ${file.absolutePath}")
+            isOfflineFilePlaying = true
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                prepare()
+                start()
+                setOnCompletionListener {
+                    it.release()
+                    mediaPlayer = null
+                    isOfflineFilePlaying = false
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MainViewModel", "Error playing offline file", e)
+            e.printStackTrace()
+            isOfflineFilePlaying = false
         }
     }
 
@@ -145,11 +209,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.release()
         }
         mediaPlayer = null
+        isOfflineFilePlaying = false
     }
 
     fun clearOfflineResults() {
         offlineResults = emptyList()
         offlineWavInfo = null
+        sampleWavInfo = null
         offlineResultMessage = "Select a file to analyze"
         currentAnalyzedFile = null
     }
@@ -178,128 +244,132 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onProgress: (Float) -> Unit
     ): Pair<com.example.audiometer.utils.WavInfo?, List<OfflineAnalysisResult>> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
         currentAnalyzedFile = file
+        android.util.Log.d("MainViewModel", "Starting offline analysis for: ${file.absolutePath}")
+        
         val matches = mutableListOf<OfflineAnalysisResult>()
-        val extractor = com.example.audiometer.utils.AudioFeatureExtractor()
         val frameSize = 1024
         val hopLength = 256  // 与 Python 一致的帧移
-        val SAMPLE_RATE = 16000  // 使用 16kHz
 
-        // 1. Load Target as MFCC Sequence
+        // 1. Get Input File Info FIRST (需要获取真实采样率)
+        val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
+        if (wavInfo == null) {
+            android.util.Log.e("MainViewModel", "Failed to read WAV info from file")
+            offlineResultMessage = "Invalid WAV file"
+            return@withContext Pair(null, emptyList())
+        }
+        offlineWavInfo = wavInfo
+        
+        // 使用文件的实际采样率，而非硬编码 16000
+        val actualSampleRate = wavInfo.sampleRate.toFloat()
+        android.util.Log.d("MainViewModel", "WAV Info: sampleRate=${wavInfo.sampleRate}, duration=${wavInfo.durationMs}ms, channels=${wavInfo.channels}")
+
+        // 2. Load Sample Audio
         val targetPath = configRepo.sampleAudioPath
         if (targetPath.isNullOrEmpty()) {
+            android.util.Log.e("MainViewModel", "No sample audio path set")
             offlineResultMessage = "No sample audio set"
-            return@withContext Pair(null, emptyList())
+            return@withContext Pair(wavInfo, emptyList())
         }
         val targetFile = java.io.File(targetPath)
         if (!targetFile.exists()) {
+            android.util.Log.e("MainViewModel", "Sample file not found: $targetPath")
             offlineResultMessage = "Sample file not found"
-            return@withContext Pair(null, emptyList())
+            return@withContext Pair(wavInfo, emptyList())
+        }
+        
+        android.util.Log.d("MainViewModel", "Sample file: $targetPath (${targetFile.length()} bytes)")
+        android.util.Log.d("MainViewModel", "Offline file: ${file.absolutePath} (${file.length()} bytes)")
+
+        // 获取样本文件的采样率信息
+        val targetWavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(targetFile)
+        
+        // 如果采样率读取失败或为 0，尝试根据样本数估算
+        var estimatedSampleRate: Int? = null
+        if (targetWavInfo == null || targetWavInfo.sampleRate <= 0) {
+            android.util.Log.w("MainViewModel", "Sample WAV info invalid or sampleRate=0, attempting estimation...")
+            
+            val fileSize = targetFile.length() - 44  // 减去 WAV 头
+            val bytesPerSample = 2  // 假设 16-bit
+            val estimatedSamples = fileSize / bytesPerSample
+            
+            // 优先：尝试基于实际加载的样本数和假设时长估算
+            // 样本音频通常是 0.3-1 秒
+            // 更安全的方法：假设与离线文件采样率相同
+            estimatedSampleRate = wavInfo.sampleRate  // 使用离线文件的采样率
+            
+            android.util.Log.w("MainViewModel", "Using offline file's sample rate ($estimatedSampleRate Hz) for sample file")
+            android.util.Log.w("MainViewModel", "Sample file: $estimatedSamples samples (estimated)")
+            
+            // 创建估算的 WavInfo
+            val estimatedDuration = (estimatedSamples * 1000.0 / estimatedSampleRate).toLong()
+            sampleWavInfo = com.example.audiometer.utils.WavInfo(
+                sampleRate = estimatedSampleRate,
+                channels = 1,
+                bitDepth = 16,
+                durationMs = estimatedDuration
+            )
+        } else {
+            sampleWavInfo = targetWavInfo
+            android.util.Log.d("MainViewModel", "Sample WAV Info: sampleRate=${targetWavInfo.sampleRate}, duration=${targetWavInfo.durationMs}ms")
+            
+            // 警告：采样率不匹配
+            if (targetWavInfo.sampleRate != wavInfo.sampleRate) {
+                android.util.Log.w("MainViewModel", "⚠️ Sample rate mismatch! Sample=${targetWavInfo.sampleRate} Hz, Offline=${wavInfo.sampleRate} Hz")
+                android.util.Log.w("MainViewModel", "   MFCC features may not match correctly. Consider resampling files to the same rate.")
+            }
         }
 
-        // Get Input File Info
-        val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
-        offlineWavInfo = wavInfo
-
-        // Load target and extract MFCC sequence
+        // Load sample audio
         val targetSamples = com.example.audiometer.utils.WavUtil.loadWav(targetFile)
         if (targetSamples.isEmpty()) {
+            android.util.Log.e("MainViewModel", "Failed to load sample audio")
             offlineResultMessage = "Could not load sample"
             return@withContext Pair(wavInfo, emptyList())
         }
-        
         val targetFloats = FloatArray(targetSamples.size) { targetSamples[it].toFloat() }
-        
-        // 提取样本的完整 MFCC 序列
-        val targetMFCCSequence = mutableListOf<FloatArray>()
-        var pos = 0
-        while (pos + frameSize <= targetFloats.size) {
-            val chunk = targetFloats.sliceArray(pos until pos + frameSize)
-            val mfcc = extractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
-            // 删除 C0 与 Python 对齐
-            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
-            targetMFCCSequence.add(mfccWithoutC0)
-            pos += frameSize
-        }
-        
-        val sampleFrameCount = targetMFCCSequence.size
-        if (sampleFrameCount == 0) {
-            offlineResultMessage = "Sample too short"
-            return@withContext Pair(wavInfo, emptyList())
-        }
+        android.util.Log.d("MainViewModel", "Loaded sample: ${targetSamples.size} samples")
 
         // 2. Load Input File
         val inputSamples = com.example.audiometer.utils.WavUtil.loadWav(file)
         if (inputSamples.isEmpty()) {
+            android.util.Log.e("MainViewModel", "Failed to load offline file")
             offlineResultMessage = "Could not load analysis file"
             return@withContext Pair(wavInfo, emptyList())
         }
-        
         val inputFloats = FloatArray(inputSamples.size) { inputSamples[it].toFloat() }
+        android.util.Log.d("MainViewModel", "Loaded offline file: ${inputSamples.size} samples")
 
-        // 3. 滑动窗口分析（与 Python 一致）
-        val threshold = 100f - configRepo.similarityThreshold  // 转换为欧氏距离阈值
-        val totalSamples = inputFloats.size
-        var lastProgress = 0f
+        // 3. 使用 MFCCMatcher 进行检测（与测试逻辑完全一致）
+        val euclideanThreshold = configRepo.similarityThreshold  // 直接使用欧氏距离阈值
+        android.util.Log.d("MainViewModel", "Starting MFCC matching with threshold: $euclideanThreshold, sampleRate: $actualSampleRate")
         
-        // 提取输入文件的 MFCC 缓冲区
-        val mfccBuffer = mutableListOf<FloatArray>()
-        pos = 0
-        var frameIdx = 0
+        // 使用 MFCCMatcher.detectMatches（包含完整的去重逻辑）
+        // ⚠️ 使用实际文件的采样率，而不是硬编码 16000
+        val matchResults = com.example.audiometer.utils.MFCCMatcher.detectMatches(
+            longAudio = inputFloats,
+            sampleAudio = targetFloats,
+            sampleRate = actualSampleRate,  // ✅ 使用实际采样率
+            frameSize = frameSize,
+            hopLength = hopLength,
+            threshold = euclideanThreshold,  // 直接使用欧氏距离阈值
+            onProgress = onProgress  // 传递进度回调
+        )
         
-        while (pos + frameSize <= totalSamples) {
-            // Update progress
-            val currentProgress = pos.toFloat() / totalSamples
-            if (currentProgress - lastProgress >= 0.01) {
-                onProgress(currentProgress)
-                lastProgress = currentProgress
-            }
-
-            // 提取 MFCC
-            val chunk = inputFloats.sliceArray(pos until pos + frameSize)
-            val mfcc = extractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
-            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+        android.util.Log.d("MainViewModel", "Found ${matchResults.size} matches")
+        
+        // 转换为 OfflineAnalysisResult 格式
+        for (match in matchResults) {
+            val timeMs = (match.timeSeconds * 1000).toLong()
             
-            mfccBuffer.add(mfccWithoutC0)
-            
-            // 当缓冲区积累足够帧时，进行序列匹配
-            if (mfccBuffer.size >= sampleFrameCount) {
-                val testSequence = mfccBuffer.takeLast(sampleFrameCount)
-                
-                // 计算平均欧氏距离
-                var totalDistance = 0f
-                for (i in 0 until sampleFrameCount) {
-                    totalDistance += MFCCMatcher.calculateEuclideanDistance(
-                        testSequence[i],
-                        targetMFCCSequence[i]
-                    )
-                }
-                val avgDistance = totalDistance / sampleFrameCount
-                
-                // 转换为相似度显示
-                val similarity = maxOf(0f, 100f - avgDistance * 2)
-                
-                if (avgDistance < threshold) {
-                    val timeMs = (pos.toLong() * 1000) / SAMPLE_RATE
-                    matches.add(OfflineAnalysisResult(timeMs, similarity, configRepo.similarityThreshold))
-                    
-                    // 跳过一段避免重复匹配
-                    pos += sampleFrameCount * frameSize
-                    mfccBuffer.clear()
-                } else {
-                    pos += hopLength
-                    // 保持缓冲区大小
-                    if (mfccBuffer.size > sampleFrameCount) {
-                        mfccBuffer.removeAt(0)
-                    }
-                }
-            } else {
-                pos += hopLength
+            // 验证时间戳是否在合理范围内
+            if (timeMs > wavInfo.durationMs) {
+                android.util.Log.w("MainViewModel", "⚠️ Match time ${timeMs}ms exceeds file duration ${wavInfo.durationMs}ms! Check sample rate.")
             }
             
-            frameIdx++
+            android.util.Log.d("MainViewModel", "Match at ${timeMs}ms (${match.timeSeconds}s), distance=${match.distance}")
+            // distance 是实际欧氏距离值
+            matches.add(OfflineAnalysisResult(timeMs, match.distance, euclideanThreshold))
         }
-
-        onProgress(1.0f)
 
         offlineResults = matches
         offlineResultMessage = "Found ${matches.size} occurrences"

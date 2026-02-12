@@ -211,9 +211,8 @@ class AudioAnalysisService : Service() {
                             
                             AnalysisStateHolder.updateSimilarity(similarity)
 
-                            // 使用欧氏距离阈值判断（默认 35）
-                            val threshold = 100f - configRepo.similarityThreshold  // 转换阈值方向
-                            if (distance < threshold) {
+                            // 直接使用欧氏距离阈值
+                            if (distance < configRepo.similarityThreshold) {
                                 val currentTime = System.currentTimeMillis()
                                 if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
                                     lastAlertTime = currentTime

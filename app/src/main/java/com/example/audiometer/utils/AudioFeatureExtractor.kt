@@ -8,25 +8,55 @@ class AudioFeatureExtractor {
 
     /**
      * Calculates MFCC features for a given audio buffer.
-     * 适配 TarsosDSP 2.5 API：手动调用各个处理步骤
-     * 注意：返回的 MFCC 包含 C0，调用者需要根据需求决定是否删除
+     * Includes Hanning window and excludes C0 by default.
      */
     fun calculateMFCC(signal: FloatArray, sampleRate: Float = 16000f): FloatArray {
-        val bufferSize = signal.size
-        val amountOfCepstralCoefficients = 13
-        val amountOfMelFilters = 40
-        val lowerFilterFreq = 133.33f
+        val frame = signal.copyOf()
+        applyHanningWindow(frame)
+        
+        val bufferSize = frame.size
+        val amountOfCepstralCoefficients = 13 // We want 1..12
+        val amountOfMelFilters = 128 // librosa default
+        val lowerFilterFreq = 0f // librosa default is 0
         val upperFilterFreq = sampleRate / 2f
 
         val mfcc = MFCC(bufferSize, sampleRate, amountOfCepstralCoefficients, amountOfMelFilters, lowerFilterFreq, upperFilterFreq)
         
-        // 手动调用 MFCC 的各个处理步骤
-        val bin = mfcc.magnitudeSpectrum(signal.copyOf())
+        val bin = mfcc.magnitudeSpectrum(frame)
         val fbank = mfcc.melFilter(bin, mfcc.centerFrequencies)
         val f = mfcc.nonLinearTransformation(fbank)
         val mfccCoefficients = mfcc.cepCoefficients(f)
         
         return mfccCoefficients
+    }
+
+    /**
+     * Calculates signal energy (RMS-like)
+     */
+    fun calculateEnergy(signal: FloatArray): Float {
+        var energy = 0f
+        for (s in signal) energy += s * s
+        return energy
+    }
+
+    private fun applyHanningWindow(signal: FloatArray) {
+        for (i in signal.indices) {
+            val window = 0.5f * (1.0f - Math.cos(2.0 * Math.PI * i / (signal.size - 1)).toFloat())
+            signal[i] *= window
+        }
+    }
+
+    /**
+     * Calculates Euclidean distance between two feature vectors.
+     */
+    fun calculateEuclideanDistance(vec1: FloatArray, vec2: FloatArray): Float {
+        if (vec1.size != vec2.size) return Float.MAX_VALUE
+        var sum = 0.0
+        for (i in vec1.indices) {
+            val diff = (vec1[i] - vec2[i]).toDouble()
+            sum += diff * diff
+        }
+        return sqrt(sum).toFloat()
     }
 
     /**

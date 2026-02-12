@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
@@ -104,15 +105,114 @@ fun OfflineAnalysisScreen(viewModel: MainViewModel = viewModel()) {
         viewModel.offlineWavInfo?.let { info ->
             Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("File Info", style = MaterialTheme.typography.titleMedium)
-                    Text("Sample Rate: ${info.sampleRate} Hz")
-                    Text("Duration: ${formatTime(info.durationMs)}")
-                    Text("Channels: ${info.channels}")
+                    Text("File Info", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Sample Rate: ${info.sampleRate} Hz", style = MaterialTheme.typography.bodyMedium)
+                    Text("Duration: ${formatTime(info.durationMs)}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Channels: ${info.channels}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Bit Depth: ${info.bitDepth} bits", style = MaterialTheme.typography.bodyMedium)
+                    
+                    // 警告：如果采样率不是 16000
+                    if (info.sampleRate != 16000) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "⚠️ Sample rate is ${info.sampleRate} Hz (not 16kHz). Timestamps will be calculated based on actual rate.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
             }
         }
 
-        Text(viewModel.offlineResultMessage, style = MaterialTheme.typography.bodyLarge)
+        // 文件路径调试信息
+        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("File Paths (Debug)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text("Sample File:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = viewModel.sampleAudioPath ?: "Not set",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (viewModel.sampleAudioPath != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                )
+                
+                // 显示样本文件采样率
+                viewModel.sampleWavInfo?.let { sampleInfo ->
+                    if (sampleInfo.sampleRate > 0) {
+                        Text(
+                            text = "  Sample Rate: ${sampleInfo.sampleRate} Hz",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "  Sample Rate: Unknown (using offline file rate)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                Text("Offline File:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = viewModel.currentAnalyzedFile?.absolutePath ?: "Not selected",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (viewModel.currentAnalyzedFile != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                )
+                
+                // 显示离线文件采样率
+                viewModel.offlineWavInfo?.let { offlineInfo ->
+                    Text(
+                        text = "  Sample Rate: ${offlineInfo.sampleRate} Hz",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                // 采样率不匹配警告
+                if (viewModel.sampleWavInfo != null && viewModel.offlineWavInfo != null) {
+                    if (viewModel.sampleWavInfo!!.sampleRate != viewModel.offlineWavInfo!!.sampleRate) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "⚠️ Sample rate mismatch! Files have different sample rates, which may affect matching accuracy.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 播放按钮
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.playSampleAudio() },
+                        enabled = viewModel.sampleAudioPath != null,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (viewModel.isSamplePlaying) "Stop Sample" else "Play Sample")
+                    }
+                    
+                    Button(
+                        onClick = { viewModel.playOfflineFile() },
+                        enabled = viewModel.currentAnalyzedFile != null,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (viewModel.isOfflineFilePlaying) "Stop Offline" else "Play Offline")
+                    }
+                }
+            }
+        }
+
+        Text(viewModel.offlineResultMessage, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -135,8 +235,14 @@ fun OfflineAnalysisScreen(viewModel: MainViewModel = viewModel()) {
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Similarity: ${String.format(Locale.US, "%.2f", result.similarity)} (Threshold: ${String.format(Locale.US, "%.2f", result.threshold)})",
-                                style = MaterialTheme.typography.bodyMedium
+                                text = "Distance: ${String.format(Locale.US, "%.2f", result.similarity)} (Threshold: ${String.format(Locale.US, "%.2f", result.threshold)})",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (result.similarity < result.threshold) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = "Lower is better",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }

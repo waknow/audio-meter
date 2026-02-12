@@ -7,7 +7,7 @@ class ConfigRepository(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("audiometer_config", Context.MODE_PRIVATE)
 
     var similarityThreshold: Float
-        get() = prefs.getFloat("similarity_threshold", 80.0f)
+        get() = prefs.getFloat("similarity_threshold", 35.0f)  // 默认欧氏距离阈值35
         set(value) = prefs.edit().putFloat("similarity_threshold", value).apply()
 
     var sampleIntervalMs: Long

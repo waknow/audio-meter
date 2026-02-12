@@ -261,14 +261,19 @@ fun ConfigScreen(viewModel: MainViewModel = viewModel()) {
         Text("Configuration", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
 
-        Text("Similarity Threshold: ${threshold.toInt()}%")
+        Text("MFCC Distance Threshold: ${String.format(Locale.US, "%.1f", threshold)}")
+        Text(
+            text = "Lower = Stricter matching (Euclidean distance, typical: 20-50)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Slider(
             value = threshold,
             onValueChange = {
                 threshold = it
-                viewModel.threshold = it // Save immediately or on save button? User said "手拉取", usually implies immediate or at least no numeric input.
+                viewModel.threshold = it
             },
-            valueRange = 0f..100f,
+            valueRange = 10f..100f,  // 合理的欧氏距离范围
             modifier = Modifier.fillMaxWidth()
         )
 

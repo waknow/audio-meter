@@ -97,60 +97,147 @@ object WavUtil {
     }
 
     fun getWavInfo(file: File): WavInfo? {
-        if (!file.exists() || file.length() < 44) return null
+        if (!file.exists() || file.length() < 12) return null
 
         try {
-            file.inputStream().use { input ->
-                val header = ByteArray(44)
-                if (input.read(header) != 44) return null
+            // Read first 2KB to find chunks (usually enough)
+            val headerBytes = file.inputStream().use { it.readNBytes(2048) }
+            if (headerBytes.size < 12) return null
 
-                val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+            val buffer = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
 
-                // Validate RIFF and WAVE
-                if (header[0] != 'R'.code.toByte() || header[8] != 'W'.code.toByte()) return null
-
-                val channels = buffer.getShort(22).toInt()
-                val sampleRate = buffer.getInt(24)
-                val bitDepth = buffer.getShort(34).toInt()
-
-                // Calculate duration
-                val byteRate = buffer.getInt(28)
-                val dataSize = buffer.getInt(40)
-
-                // If byteRate is 0 or dataSize is 0, try to estimate
-                val fileSizeData = file.length() - 44
-                val effectiveByteRate = if (byteRate > 0) byteRate else sampleRate * channels * bitDepth / 8
-
-                val durationMs = if (effectiveByteRate > 0) {
-                     (fileSizeData * 1000) / effectiveByteRate
-                } else {
-                    0L
-                }
-
-                return WavInfo(sampleRate, channels, bitDepth, durationMs)
+            // Check RIFF and WAVE
+            if (headerBytes[0] != 'R'.code.toByte() || headerBytes[8] != 'W'.code.toByte()) {
+                android.util.Log.e("WavUtil", "Not a valid RIFF/WAVE file: ${file.name}")
+                return null
             }
+
+            var sampleRate = 0
+            var channels = 0
+            var bitDepth = 0
+            var dataSize = 0
+            var fmtFound = false
+
+            var offset = 12
+            while (offset + 8 <= headerBytes.size) {
+                // 读取 chunkId 字符串而不创建中间 byte 数组，避免编码问题
+                val id1 = headerBytes[offset].toInt().toChar()
+                val id2 = headerBytes[offset + 1].toInt().toChar()
+                val id3 = headerBytes[offset + 2].toInt().toChar()
+                val id4 = headerBytes[offset + 3].toInt().toChar()
+                val chunkId = "$id1$id2$id3$id4"
+                
+                val chunkSize = buffer.getInt(offset + 4)
+                
+                if (chunkId == "fmt ") {
+                    // fmt 块内部结构：
+                    // +0: AudioFormat (2 bytes)
+                    // +2: NumChannels (2 bytes)
+                    // +4: SampleRate (4 bytes)
+                    // +8: ByteRate (4 bytes)
+                    // +12: BlockAlign (2 bytes)
+                    // +14: BitsPerSample (2 bytes)
+                    channels = buffer.getShort(offset + 10).toInt()
+                    sampleRate = buffer.getInt(offset + 12)
+                    bitDepth = buffer.getShort(offset + 22).toInt()
+                    fmtFound = true
+                } else if (chunkId == "data") {
+                    dataSize = chunkSize
+                    // 找到 data 块后可以停止扫描元数据
+                    break
+                }
+                
+                offset += 8 + chunkSize
+                // 如果 chunkSize 是奇数，WAV 格式通常有一个填充字节
+                if (chunkSize % 2 != 0) offset++
+                
+                // 防止死循环
+                if (chunkSize <= 0 && chunkId != "data") break 
+            }
+
+            if (!fmtFound) {
+                println("WavUtil: No 'fmt ' chunk found in ${file.name}")
+                return null
+            }
+
+            // Calculate duration
+            // Use file size to estimate if dataSize from header looks wrong
+            val effectiveDataSize = if (dataSize > 0 && dataSize < file.length()) dataSize.toLong() 
+                                   else file.length() - offset - 8
+            
+            val byteRate = sampleRate * channels * bitDepth / 8
+            val durationMs = if (byteRate > 0) {
+                (effectiveDataSize * 1000) / byteRate
+            } else {
+                0L
+            }
+
+            println("WavUtil: Parsed ${file.name}: ${sampleRate}Hz, ${channels}ch, ${durationMs}ms")
+            return WavInfo(sampleRate, channels, bitDepth, durationMs)
+
         } catch (e: Exception) {
-            e.printStackTrace()
+            println("WavUtil: Error parsing ${file.name}: ${e.message}")
             return null
         }
     }
 
     @Throws(IOException::class)
     fun loadWav(file: File): ShortArray {
-        // Very basic WAV loader, assumes 16-bit mono or takes first channel
         val bytes = file.readBytes()
-        if (bytes.size < 44) return ShortArray(0)
+        if (bytes.size < 12) return ShortArray(0)
 
-        // Skip header - in production code we should parse it to get sample rate/channels
-        // Here we assume it matches what we record/save for simplicity
-        val dataSize = bytes.size - 44
-        val shortCount = dataSize / 2
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        
+        // Find data chunk
+        var offset = 12
+        var dataStart = -1
+        var dataSize = 0
+
+        while (offset + 8 <= bytes.size) {
+            val id1 = bytes[offset].toInt().toChar()
+            val id2 = bytes[offset + 1].toInt().toChar()
+            val id3 = bytes[offset + 2].toInt().toChar()
+            val id4 = bytes[offset + 3].toInt().toChar()
+            val chunkId = "$id1$id2$id3$id4"
+            
+            val chunkSize = buffer.getInt(offset + 4)
+            
+            if (chunkId == "data") {
+                dataStart = offset + 8
+                dataSize = chunkSize
+                break
+            }
+            offset += 8 + chunkSize
+            if (chunkSize % 2 != 0) offset++
+            
+            if (chunkSize <= 0) break
+        }
+
+        if (dataStart == -1 || dataStart >= bytes.size) {
+            android.util.Log.e("WavUtil", "No 'data' chunk found in ${file.name}")
+            // Fallback: search for 'data' string manually
+            for (i in 12 until bytes.size - 4) {
+                if (bytes[i] == 'd'.code.toByte() && bytes[i+1] == 'a'.code.toByte() &&
+                    bytes[i+2] == 't'.code.toByte() && bytes[i+3] == 'a'.code.toByte()) {
+                    dataStart = i + 8
+                    dataSize = bytes.size - dataStart
+                    break
+                }
+            }
+            if (dataStart == -1) return ShortArray(0)
+        }
+
+        val availableData = bytes.size - dataStart
+        val actualDataSize = if (dataSize > 0 && dataSize <= availableData) dataSize else availableData
+        
+        val shortCount = actualDataSize / 2
         val shorts = ShortArray(shortCount)
 
-        val buffer = ByteBuffer.wrap(bytes, 44, dataSize)
-        buffer.order(ByteOrder.LITTLE_ENDIAN)
+        buffer.position(dataStart)
         for (i in 0 until shortCount) {
-            shorts[i] = buffer.getShort()
+            if (buffer.remaining() >= 2) {
+                shorts[i] = buffer.getShort()
+            }
         }
         return shorts
     }
