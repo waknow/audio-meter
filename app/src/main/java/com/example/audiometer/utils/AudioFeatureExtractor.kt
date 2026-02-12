@@ -8,16 +8,24 @@ class AudioFeatureExtractor {
 
     /**
      * Calculates MFCC features for a given audio buffer.
-     * Includes Hanning window and excludes C0 by default.
+     * Includes energy normalization and Hanning window.
      */
-    fun calculateMFCC(signal: FloatArray, sampleRate: Float = 16000f): FloatArray {
+    fun calculateMFCC(signal: FloatArray, sampleRate: Float = 16000f, skipNormalization: Boolean = false): FloatArray {
         val frame = signal.copyOf()
+        
+        // 1. 能量归一化 (关键：解决不同设备/距离导致的音量差异)
+        // 将帧归一化到单位 RMS，使 MFCC 对绝对音量不敏感
+        if (!skipNormalization) {
+            normalizeFrame(frame)
+        }
+
+        // 2. 应用汉宁窗
         applyHanningWindow(frame)
         
         val bufferSize = frame.size
         val amountOfCepstralCoefficients = 13 // We want 1..12
         val amountOfMelFilters = 128 // librosa default
-        val lowerFilterFreq = 0f // librosa default is 0
+        val lowerFilterFreq = 0f 
         val upperFilterFreq = sampleRate / 2f
 
         val mfcc = MFCC(bufferSize, sampleRate, amountOfCepstralCoefficients, amountOfMelFilters, lowerFilterFreq, upperFilterFreq)
@@ -28,6 +36,20 @@ class AudioFeatureExtractor {
         val mfccCoefficients = mfcc.cepCoefficients(f)
         
         return mfccCoefficients
+    }
+
+    /**
+     * 对帧进行 RMS 归一化，解决音量差异问题
+     */
+    private fun normalizeFrame(frame: FloatArray) {
+        var sumSq = 0f
+        for (v in frame) sumSq += v * v
+        val rms = sqrt(sumSq / frame.size)
+        if (rms > 1e-6f) {
+            for (i in frame.indices) {
+                frame[i] /= rms
+            }
+        }
     }
 
     /**

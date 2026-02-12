@@ -36,16 +36,11 @@ class AudioAnalysisService : Service() {
 
     private lateinit var configRepo: ConfigRepository
 
-    // Analysis - 保存样本的完整 MFCC 序列（而非平均值）
-    private var targetMFCCSequence: List<FloatArray>? = null
-    private var sampleFrameCount: Int = 0
-    private val FRAME_SIZE = 1024
-    private val HOP_LENGTH = 256  // 与 Python 一致的帧移
+    // Analysis - 保存样本的代表性特征
+    private var bestSampleMFCC: FloatArray? = null
+    private val FRAME_SIZE = 2048   // 与 MFCCMatcher 一致
+    private val HOP_LENGTH = 512    // 与 MFCCMatcher 一致
     
-    // 滑动窗口缓冲区 - 存储最近的 MFCC 帧
-    private val mfccBuffer = mutableListOf<FloatArray>()
-    private val maxBufferSize = 100  // 最多缓存100帧
-
     companion object {
         const val CHANNEL_ID = "AudioMeterChannel"
         const val NOTIFICATION_ID = 1
@@ -93,7 +88,7 @@ class AudioAnalysisService : Service() {
     }
 
     /**
-     * 加载样本的完整 MFCC 序列（保留时序信息）
+     * 加载样本的代表性特征
      */
     private fun loadSampleFingerprint() {
         val path = configRepo.sampleAudioPath
@@ -112,24 +107,17 @@ class AudioAnalysisService : Service() {
 
             val floats = FloatArray(samples.size) { samples[it].toFloat() }
             
-            // 提取完整的 MFCC 序列（不计算平均值）
-            val mfccSequence = mutableListOf<FloatArray>()
-            var pos = 0
-            while (pos + FRAME_SIZE <= floats.size) {
-                val chunk = floats.sliceArray(pos until pos + FRAME_SIZE)
-                val mfcc = featureExtractor.calculateMFCC(chunk, SAMPLE_RATE.toFloat())
-                // 删除 C0（与 Python 对齐）
-                val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
-                mfccSequence.add(mfccWithoutC0)
-                pos += FRAME_SIZE  // 无重叠提取
-            }
-            
-            targetMFCCSequence = mfccSequence
-            sampleFrameCount = mfccSequence.size
+            // 使用 MFCCMatcher 内部逻辑寻找最强帧特征
+            bestSampleMFCC = MFCCMatcher.findBestRepresentativeMFCC(
+                audio = floats,
+                frameSize = FRAME_SIZE,
+                sampleRate = SAMPLE_RATE.toFloat(),
+                extractor = featureExtractor
+            )
             
             val durationMs = (floats.size * 1000.0 / SAMPLE_RATE).toInt()
             AnalysisStateHolder.addLog(
-                "Sample Loaded: ${file.name} (${sampleFrameCount} frames, ${durationMs}ms)"
+                "Sample Loaded: ${file.name} (Length: ${durationMs}ms, BestFrame found: ${bestSampleMFCC != null})"
             )
         } catch (e: Exception) {
             AnalysisStateHolder.addLog("Failed to load sample: ${e.message}")
@@ -141,6 +129,7 @@ class AudioAnalysisService : Service() {
     private fun startAnalysis() {
         isRunning = true
         AnalysisStateHolder.setRunning(true)
+        AnalysisStateHolder.resetStats()
 
         serviceScope.launch {
             try {
@@ -166,62 +155,73 @@ class AudioAnalysisService : Service() {
                 audioRecord?.startRecording()
                 AnalysisStateHolder.addLog("Recording started")
 
-                val buffer = ShortArray(bufferSize)
+                val readBuffer = ShortArray(2048) // 较小的读取缓冲区
+                val slidingBuffer = ShortArray(FRAME_SIZE * 2) // 较大的滑动窗口缓冲区
+                var slidingBufferCount = 0
+                
                 var lastAlertTime = 0L
-                var audioBufferPos = 0
 
                 while (isRunning) {
-                    val readResult = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (readResult >= FRAME_SIZE) {
-                        // 按 HOP_LENGTH 步长处理多个帧
-                        var offset = 0
-                        while (offset + FRAME_SIZE <= readResult) {
+                    val readResult = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: 0
+                    if (readResult > 0) {
+                        // 将新读取的数据放入滑动缓冲区
+                        for (i in 0 until readResult) {
+                            if (slidingBufferCount < slidingBuffer.size) {
+                                slidingBuffer[slidingBufferCount++] = readBuffer[i]
+                            }
+                        }
+
+                        // 处理缓存中的完整帧
+                        var frameCount = 0
+                        while (slidingBufferCount >= FRAME_SIZE) {
                             val floatChunk = FloatArray(FRAME_SIZE)
                             for (i in 0 until FRAME_SIZE) {
-                                floatChunk[i] = buffer[offset + i].toFloat()
+                                floatChunk[i] = slidingBuffer[i].toFloat()
                             }
 
-                            // 计算 MFCC 并删除 C0
+                            // 计算音频能量（用于调试）
+                            val audioLevel = featureExtractor.calculateEnergy(floatChunk)
+                            
+                            // 计算 MFCC (1..12)
                             val mfcc = featureExtractor.calculateMFCC(floatChunk, SAMPLE_RATE.toFloat())
                             val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
                             
-                            // 添加到滑动窗口缓冲区
-                            mfccBuffer.add(mfccWithoutC0)
-                            if (mfccBuffer.size > maxBufferSize) {
-                                mfccBuffer.removeAt(0)
-                            }
-
-                            // 当缓冲区积累足够帧时，进行序列匹配
-                            val distance = if (targetMFCCSequence != null && mfccBuffer.size >= sampleFrameCount) {
-                                calculateSequenceDistance(
-                                    mfccBuffer.takeLast(sampleFrameCount),
-                                    targetMFCCSequence!!
-                                )
+                            // 匹配对比
+                            val distance = if (bestSampleMFCC != null) {
+                                featureExtractor.calculateEuclideanDistance(mfccWithoutC0, bestSampleMFCC!!)
                             } else {
                                 Float.MAX_VALUE
                             }
 
-                            // 转换为相似度百分比显示（距离越小越好）
                             val similarity = if (distance < Float.MAX_VALUE) {
-                                // 映射到 0-100，阈值 35 对应约 65 分
-                                maxOf(0f, 100f - distance * 2)
+                                maxOf(0f, 100f - (distance / 70f * 100f))
                             } else {
                                 0f
                             }
                             
-                            AnalysisStateHolder.updateSimilarity(similarity)
+                            AnalysisStateHolder.updateSimilarity(similarity, distance, audioLevel)
+                            
+                            // 每50帧记录一次详细日志
+                            if (frameCount % 50 == 0) {
+                                AnalysisStateHolder.addLog("Frame #$frameCount: Dist=${String.format(Locale.US, "%.2f", distance)}, Level=${String.format(Locale.US, "%.0f", audioLevel)}")
+                            }
+                            frameCount++
 
-                            // 直接使用欧氏距离阈值
                             if (distance < configRepo.similarityThreshold) {
                                 val currentTime = System.currentTimeMillis()
                                 if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
                                     lastAlertTime = currentTime
-                                    handleAlert(similarity, buffer.sliceArray(0 until readResult))
+                                    AnalysisStateHolder.incrementMatchCount()
+                                    handleAlert(similarity, slidingBuffer.sliceArray(0 until FRAME_SIZE))
                                 }
                             }
                             
-                            offset += HOP_LENGTH
-                            audioBufferPos += HOP_LENGTH
+                            // 每次移动 HOP_LENGTH
+                            val remaining = slidingBufferCount - HOP_LENGTH
+                            for (i in 0 until remaining) {
+                                slidingBuffer[i] = slidingBuffer[i + HOP_LENGTH]
+                            }
+                            slidingBufferCount = remaining
                         }
                     }
                 }
@@ -305,27 +305,9 @@ class AudioAnalysisService : Service() {
     }
 
 
-    /**
-     * 计算 MFCC 序列间的平均欧氏距离（与 Python 实现一致）
-     */
-    private fun calculateSequenceDistance(
-        sequence1: List<FloatArray>,
-        sequence2: List<FloatArray>
-    ): Float {
-        if (sequence1.size != sequence2.size) return Float.MAX_VALUE
-        
-        var totalDistance = 0f
-        for (i in sequence1.indices) {
-            totalDistance += MFCCMatcher.calculateEuclideanDistance(sequence1[i], sequence2[i])
-        }
-        
-        return totalDistance / sequence1.size
-    }
-
     private fun stopAnalysis() {
         isRunning = false
         AnalysisStateHolder.setRunning(false)
-        mfccBuffer.clear()
         try {
             audioRecord?.stop()
             audioRecord?.release()

@@ -169,7 +169,7 @@ object MFCCMatcher {
     /**
      * 在样本中寻找能量最强的帧作为代表性特征
      */
-    private fun findBestRepresentativeMFCC(
+    fun findBestRepresentativeMFCC(
         audio: FloatArray,
         frameSize: Int,
         sampleRate: Float,

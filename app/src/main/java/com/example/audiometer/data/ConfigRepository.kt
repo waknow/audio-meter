@@ -21,5 +21,9 @@ class ConfigRepository(context: Context) {
     var sampleAudioPath: String?
         get() = prefs.getString("sample_audio_path", null)
         set(value) = prefs.edit().putString("sample_audio_path", value).apply()
+
+    var offlineAudioPath: String?
+        get() = prefs.getString("offline_audio_path", null)
+        set(value) = prefs.edit().putString("offline_audio_path", value).apply()
 }
 

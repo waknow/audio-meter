@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 data class OfflineAnalysisResult(
     val timestamp: Long,
@@ -27,11 +28,16 @@ data class OfflineAnalysisResult(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val db = (application as AudioMeterApplication).database
     private val configRepo = (application as AudioMeterApplication).configRepository
+    private val simulator = com.example.audiometer.RealTimeLogicSimulator(application)
 
     val isRunning = AnalysisStateHolder.isRunning
     val currentSimilarity = AnalysisStateHolder.currentSimilarity
     val logs = AnalysisStateHolder.logs
     val totalChecks = AnalysisStateHolder.totalChecks
+    val matchCount = AnalysisStateHolder.matchCount
+    val currentDistance = AnalysisStateHolder.currentDistance
+    val audioLevel = AnalysisStateHolder.audioLevel
+    val lastProcessedTime = AnalysisStateHolder.lastProcessedTime
 
     // Player state
     private var mediaPlayer: MediaPlayer? = null
@@ -77,6 +83,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val sampleAudioPath: String?
         get() = configRepo.sampleAudioPath
+
+    fun updateOfflineAudioPath(path: String) {
+        configRepo.offlineAudioPath = path
+    }
+
+    val offlineAudioPath: String?
+        get() = configRepo.offlineAudioPath
 
     fun playSampleAudio() {
         if (samplePlayer?.isPlaying == true) {
@@ -229,6 +242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleService() {
         val context = getApplication<AudioMeterApplication>()
         if (isRunning.value) {
+            simulator.stop()
             val intent = Intent(context, AudioAnalysisService::class.java).apply {
                 action = "STOP"
             }
@@ -236,6 +250,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             val intent = Intent(context, AudioAnalysisService::class.java)
             context.startForegroundService(intent)
+        }
+    }
+
+    /**
+     * 使用本地文件模拟实时输入逻辑 (Debug 用)
+     */
+    fun startRealTimeSimulation(inputFile: File) {
+        val samplePath = configRepo.sampleAudioPath
+        if (samplePath != null) {
+            val sampleFile = File(samplePath)
+            if (sampleFile.exists()) {
+                AnalysisStateHolder.setRunning(true)
+                simulator.simulate(sampleFile, inputFile)
+            } else {
+                AnalysisStateHolder.addLog("Simulation Failed: Sample file not found at $samplePath")
+            }
+        } else {
+            AnalysisStateHolder.addLog("Simulation Failed: No sample audio configured")
         }
     }
 
