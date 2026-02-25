@@ -30,8 +30,8 @@ object MFCCMatcher {
         longAudio: FloatArray,
         sampleAudio: FloatArray,
         sampleRate: Float = 16000f,
-        frameSize: Int = 2048,
-        hopLength: Int = 512,
+        frameSize: Int = 1024,
+        hopLength: Int = 256,
         threshold: Float = 35f,
         onProgress: ((Float) -> Unit)? = null
     ): List<MatchResult> {

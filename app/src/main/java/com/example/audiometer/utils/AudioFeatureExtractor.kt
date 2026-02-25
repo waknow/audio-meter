@@ -118,7 +118,7 @@ class AudioFeatureExtractor {
     /**
      * Computes the average MFCC vector for a longer signal.
      */
-    fun computeAverageMFCC(signal: FloatArray, frameSize: Int = 1024, sampleRate: Float = 44100f): FloatArray {
+    fun computeAverageMFCC(signal: FloatArray, frameSize: Int = 1024, sampleRate: Float = 16000f): FloatArray {
         if (signal.size < frameSize) return FloatArray(13)
 
         val numChunks = signal.size / frameSize

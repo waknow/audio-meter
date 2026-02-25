@@ -95,8 +95,8 @@ class MFCCMatchingTest {
             longAudio = longFloats,
             sampleAudio = sampleFloats,
             sampleRate = sampleRate,
-            frameSize = 2048,
-            hopLength = 512,
+            frameSize = 1024,
+            hopLength = 256,
             threshold = threshold
         )
         
