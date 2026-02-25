@@ -22,8 +22,8 @@ class RealTimeLogicSimulator(private val context: Context) {
     private val configRepo = (context.applicationContext as com.example.audiometer.AudioMeterApplication).configRepository
     
     // 同步 AudioAnalysisService 的核心常数
-    private val FRAME_SIZE = 2048
-    private val HOP_LENGTH = 512
+    private val FRAME_SIZE = 1024
+    private val HOP_LENGTH = 256
     private val SAMPLE_RATE = 16000
 
     fun simulate(sampleFile: File, inputAudioFile: File) {
@@ -86,8 +86,8 @@ class RealTimeLogicSimulator(private val context: Context) {
                         AnalysisStateHolder.incrementMatchCount()
                     }
                     
-                    // 模拟实时感：每处理一帧休眠一下 (16000Hz 下 512 samples 约为 32ms)
-                    delay(32) 
+                    // 模拟实时感：每处理一帧休眠一下 (16000Hz 下 256 samples 约为 16ms)
+                    delay(16) 
                     
                     offset += HOP_LENGTH
                 }

@@ -38,8 +38,8 @@ class AudioAnalysisService : Service() {
 
     // Analysis - 保存样本的代表性特征
     private var bestSampleMFCC: FloatArray? = null
-    private val FRAME_SIZE = 2048   // 与 MFCCMatcher 一致
-    private val HOP_LENGTH = 512    // 与 MFCCMatcher 一致
+    private val FRAME_SIZE = 1024   // 与离线分析（MFCCMatcher.detectMatches）一致
+    private val HOP_LENGTH = 256    // 与离线分析（MFCCMatcher.detectMatches）一致
     
     companion object {
         const val CHANNEL_ID = "AudioMeterChannel"
@@ -107,15 +107,24 @@ class AudioAnalysisService : Service() {
 
             val floats = FloatArray(samples.size) { samples[it].toFloat() }
             
+            // 如果样本文件采样率与录音采样率不同，重采样到 SAMPLE_RATE（与离线分析一致）
+            val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
+            val fileSampleRate = wavInfo?.sampleRate?.toFloat() ?: SAMPLE_RATE.toFloat()
+            val processedFloats = if (fileSampleRate != SAMPLE_RATE.toFloat()) {
+                MFCCMatcher.resample(floats, fileSampleRate, SAMPLE_RATE.toFloat())
+            } else {
+                floats
+            }
+            
             // 使用 MFCCMatcher 内部逻辑寻找最强帧特征
             bestSampleMFCC = MFCCMatcher.findBestRepresentativeMFCC(
-                audio = floats,
+                audio = processedFloats,
                 frameSize = FRAME_SIZE,
                 sampleRate = SAMPLE_RATE.toFloat(),
                 extractor = featureExtractor
             )
             
-            val durationMs = (floats.size * 1000.0 / SAMPLE_RATE).toInt()
+            val durationMs = (processedFloats.size * 1000.0 / SAMPLE_RATE).toInt()
             AnalysisStateHolder.addLog(
                 "Sample Loaded: ${file.name} (Length: ${durationMs}ms, BestFrame found: ${bestSampleMFCC != null})"
             )
@@ -155,7 +164,7 @@ class AudioAnalysisService : Service() {
                 audioRecord?.startRecording()
                 AnalysisStateHolder.addLog("Recording started")
 
-                val readBuffer = ShortArray(2048) // 较小的读取缓冲区
+                val readBuffer = ShortArray(FRAME_SIZE) // 每次读取一帧大小的数据
                 val slidingBuffer = ShortArray(FRAME_SIZE * 2) // 较大的滑动窗口缓冲区
                 var slidingBufferCount = 0
                 
@@ -247,7 +256,7 @@ class AudioAnalysisService : Service() {
                 val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
                 if (dir != null) {
                     val file = File(dir, fileName)
-                    com.example.audiometer.utils.WavUtil.saveWav(file, audioData)
+                    com.example.audiometer.utils.WavUtil.saveWav(file, audioData, SAMPLE_RATE)
                     savedPath = file.absolutePath
                     AnalysisStateHolder.addLog("Saved to $fileName")
                 }

@@ -96,7 +96,7 @@ object MFCCMatcher {
     /**
      * 线性插值重采样
      */
-    private fun resample(data: FloatArray, fromSr: Float, toSr: Float): FloatArray {
+    internal fun resample(data: FloatArray, fromSr: Float, toSr: Float): FloatArray {
         if (fromSr == toSr) return data
         val ratio = fromSr / toSr
         val newSize = (data.size / ratio).toInt()
