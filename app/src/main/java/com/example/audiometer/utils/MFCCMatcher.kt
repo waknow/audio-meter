@@ -8,6 +8,12 @@ import kotlin.math.sqrt
  */
 object MFCCMatcher {
 
+    // ── 共享 MFCC 参数常量（所有调用方统一使用这些值）──────────────────────
+    const val SAMPLE_RATE = 16000   // 采样率（与 Python librosa 对齐）
+    const val FRAME_SIZE  = 1024    // 帧大小（Python n_fft）
+    const val HOP_LENGTH  = 256     // 帧移（Python hop_length）
+    // ────────────────────────────────────────────────────────────────────────
+
     data class MatchResult(
         val frameIndex: Int,
         val distance: Float,
@@ -15,13 +21,31 @@ object MFCCMatcher {
     )
 
     /**
+     * 对单帧音频计算 MFCC 并去除 C0（C1..C12）。
+     * 所有调用方统一通过此方法完成 MFCC 提取，避免分散的 calculateMFCC + sliceArray 调用。
+     *
+     * @param chunk      长度为 FRAME_SIZE 的音频帧
+     * @param extractor  AudioFeatureExtractor 实例
+     * @param sampleRate 采样率（默认 SAMPLE_RATE）
+     * @return 长度为 12 的 MFCC 向量（已去除 C0）
+     */
+    fun extractFrameMFCC(
+        chunk: FloatArray,
+        extractor: AudioFeatureExtractor,
+        sampleRate: Float = SAMPLE_RATE.toFloat()
+    ): FloatArray {
+        val mfcc = extractor.calculateMFCC(chunk, sampleRate)
+        return mfcc.sliceArray(1 until mfcc.size)
+    }
+
+    /**
      * 检测长音频中的所有匹配位置（Python 风格滑动窗口）
      * 
      * @param longAudio 长音频数据
      * @param sampleAudio 样本音频数据
-     * @param sampleRate 采样率（建议使用 16000 与 Python 一致）
-     * @param frameSize 帧大小（默认 1024）
-     * @param hopLength 帧移（默认 256，Python 中的 hop_length）
+     * @param sampleRate 采样率（建议使用 SAMPLE_RATE 与 Python 一致）
+     * @param frameSize 帧大小（默认 FRAME_SIZE）
+     * @param hopLength 帧移（默认 HOP_LENGTH，Python 中的 hop_length）
      * @param threshold 距离阈值（默认 35.0，Python 中的值）
      * @param onProgress 进度回调（可选，范围 0.0-1.0）
      * @return 匹配结果列表
@@ -29,13 +53,13 @@ object MFCCMatcher {
     fun detectMatches(
         longAudio: FloatArray,
         sampleAudio: FloatArray,
-        sampleRate: Float = 16000f,
-        frameSize: Int = 2048,
-        hopLength: Int = 512,
+        sampleRate: Float = SAMPLE_RATE.toFloat(),
+        frameSize: Int = FRAME_SIZE,
+        hopLength: Int = HOP_LENGTH,
         threshold: Float = 35f,
         onProgress: ((Float) -> Unit)? = null
     ): List<MatchResult> {
-        val targetSr = 16000f
+        val targetSr = SAMPLE_RATE.toFloat()
         
         // 1. 如果采样率不是 16k，进行下采样（这是对齐 Python librosa 的关键，通常 librosa.load 会自动转换到 16k/22050）
         val resampledLong = if (sampleRate != targetSr) resample(longAudio, sampleRate, targetSr) else longAudio
@@ -68,10 +92,9 @@ object MFCCMatcher {
                 lastProgress = currentProgress
             }
             
-            // 提取当前帧的 MFCC (使用 targetSr)
+            // 提取当前帧的 MFCC（统一通过 extractFrameMFCC）
             val chunk = resampledLong.sliceArray(pos until pos + frameSize)
-            val currentMFCC = extractor.calculateMFCC(chunk, targetSr)
-            val currentMFCCWithoutC0 = currentMFCC.sliceArray(1 until currentMFCC.size)
+            val currentMFCCWithoutC0 = extractFrameMFCC(chunk, extractor, targetSr)
             
             // 与样本的最强特征对比
             val distance = extractor.calculateEuclideanDistance(currentMFCCWithoutC0, bestSampleMFCC)
@@ -96,7 +119,7 @@ object MFCCMatcher {
     /**
      * 线性插值重采样
      */
-    private fun resample(data: FloatArray, fromSr: Float, toSr: Float): FloatArray {
+    internal fun resample(data: FloatArray, fromSr: Float, toSr: Float): FloatArray {
         if (fromSr == toSr) return data
         val ratio = fromSr / toSr
         val newSize = (data.size / ratio).toInt()
@@ -126,10 +149,7 @@ object MFCCMatcher {
         
         while (pos + frameSize <= audio.size) {
             val chunk = audio.sliceArray(pos until pos + frameSize)
-            val mfcc = extractor.calculateMFCC(chunk, sampleRate)
-            // 删除 C0（与 Python 一致）
-            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
-            mfccs.add(mfccWithoutC0)
+            mfccs.add(extractFrameMFCC(chunk, extractor, sampleRate))
             pos += hop
         }
 
@@ -137,8 +157,7 @@ object MFCCMatcher {
         if (mfccs.isEmpty() && audio.isNotEmpty()) {
             val chunk = FloatArray(frameSize)
             System.arraycopy(audio, 0, chunk, 0, minOf(audio.size, frameSize))
-            val mfcc = extractor.calculateMFCC(chunk, sampleRate)
-            mfccs.add(mfcc.sliceArray(1 until mfcc.size))
+            mfccs.add(extractFrameMFCC(chunk, extractor, sampleRate))
         }
         
         return mfccs
@@ -185,8 +204,7 @@ object MFCCMatcher {
             val energy = extractor.calculateEnergy(chunk)
             if (energy > maxEnergy) {
                 maxEnergy = energy
-                val mfcc = extractor.calculateMFCC(chunk, sampleRate)
-                bestMFCC = mfcc.sliceArray(1 until mfcc.size)
+                bestMFCC = extractFrameMFCC(chunk, extractor, sampleRate)
             }
             pos += hop
         }

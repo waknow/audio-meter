@@ -38,13 +38,10 @@ class AudioAnalysisService : Service() {
 
     // Analysis - 保存样本的代表性特征
     private var bestSampleMFCC: FloatArray? = null
-    private val FRAME_SIZE = 2048   // 与 MFCCMatcher 一致
-    private val HOP_LENGTH = 512    // 与 MFCCMatcher 一致
     
     companion object {
         const val CHANNEL_ID = "AudioMeterChannel"
         const val NOTIFICATION_ID = 1
-        const val SAMPLE_RATE = 16000  // 改为 16000Hz 与 Python 对齐
         const val MAX_FILES = 20
     }
 
@@ -107,15 +104,24 @@ class AudioAnalysisService : Service() {
 
             val floats = FloatArray(samples.size) { samples[it].toFloat() }
             
+            // 如果样本文件采样率与录音采样率不同，重采样到 SAMPLE_RATE（与离线分析一致）
+            val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
+            val fileSampleRate = wavInfo?.sampleRate?.toFloat() ?: MFCCMatcher.SAMPLE_RATE.toFloat()
+            val processedFloats = if (fileSampleRate != MFCCMatcher.SAMPLE_RATE.toFloat()) {
+                MFCCMatcher.resample(floats, fileSampleRate, MFCCMatcher.SAMPLE_RATE.toFloat())
+            } else {
+                floats
+            }
+            
             // 使用 MFCCMatcher 内部逻辑寻找最强帧特征
             bestSampleMFCC = MFCCMatcher.findBestRepresentativeMFCC(
-                audio = floats,
-                frameSize = FRAME_SIZE,
-                sampleRate = SAMPLE_RATE.toFloat(),
+                audio = processedFloats,
+                frameSize = MFCCMatcher.FRAME_SIZE,
+                sampleRate = MFCCMatcher.SAMPLE_RATE.toFloat(),
                 extractor = featureExtractor
             )
             
-            val durationMs = (floats.size * 1000.0 / SAMPLE_RATE).toInt()
+            val durationMs = (processedFloats.size * 1000.0 / MFCCMatcher.SAMPLE_RATE).toInt()
             AnalysisStateHolder.addLog(
                 "Sample Loaded: ${file.name} (Length: ${durationMs}ms, BestFrame found: ${bestSampleMFCC != null})"
             )
@@ -138,15 +144,15 @@ class AudioAnalysisService : Service() {
 
                 val bufferSize = maxOf(
                     AudioRecord.getMinBufferSize(
-                        SAMPLE_RATE,
+                        MFCCMatcher.SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT
-                    ), FRAME_SIZE * 2
+                    ), MFCCMatcher.FRAME_SIZE * 2
                 )
 
                 audioRecord = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
-                    SAMPLE_RATE,
+                    MFCCMatcher.SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     bufferSize
@@ -155,8 +161,8 @@ class AudioAnalysisService : Service() {
                 audioRecord?.startRecording()
                 AnalysisStateHolder.addLog("Recording started")
 
-                val readBuffer = ShortArray(2048) // 较小的读取缓冲区
-                val slidingBuffer = ShortArray(FRAME_SIZE * 2) // 较大的滑动窗口缓冲区
+                val readBuffer = ShortArray(MFCCMatcher.FRAME_SIZE) // 每次读取一帧大小的数据
+                val slidingBuffer = ShortArray(MFCCMatcher.FRAME_SIZE * 2) // 较大的滑动窗口缓冲区
                 var slidingBufferCount = 0
                 
                 var lastAlertTime = 0L
@@ -173,18 +179,17 @@ class AudioAnalysisService : Service() {
 
                         // 处理缓存中的完整帧
                         var frameCount = 0
-                        while (slidingBufferCount >= FRAME_SIZE) {
-                            val floatChunk = FloatArray(FRAME_SIZE)
-                            for (i in 0 until FRAME_SIZE) {
+                        while (slidingBufferCount >= MFCCMatcher.FRAME_SIZE) {
+                            val floatChunk = FloatArray(MFCCMatcher.FRAME_SIZE)
+                            for (i in 0 until MFCCMatcher.FRAME_SIZE) {
                                 floatChunk[i] = slidingBuffer[i].toFloat()
                             }
 
                             // 计算音频能量（用于调试）
                             val audioLevel = featureExtractor.calculateEnergy(floatChunk)
                             
-                            // 计算 MFCC (1..12)
-                            val mfcc = featureExtractor.calculateMFCC(floatChunk, SAMPLE_RATE.toFloat())
-                            val mfccWithoutC0 = mfcc.sliceArray(1 until mfcc.size)
+                            // 通过 MFCCMatcher.extractFrameMFCC 统一提取 MFCC (C1..C12)
+                            val mfccWithoutC0 = MFCCMatcher.extractFrameMFCC(floatChunk, featureExtractor)
                             
                             // 匹配对比
                             val distance = if (bestSampleMFCC != null) {
@@ -212,14 +217,14 @@ class AudioAnalysisService : Service() {
                                 if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
                                     lastAlertTime = currentTime
                                     AnalysisStateHolder.incrementMatchCount()
-                                    handleAlert(similarity, slidingBuffer.sliceArray(0 until FRAME_SIZE))
+                                    handleAlert(similarity, slidingBuffer.sliceArray(0 until MFCCMatcher.FRAME_SIZE))
                                 }
                             }
                             
                             // 每次移动 HOP_LENGTH
-                            val remaining = slidingBufferCount - HOP_LENGTH
+                            val remaining = slidingBufferCount - MFCCMatcher.HOP_LENGTH
                             for (i in 0 until remaining) {
-                                slidingBuffer[i] = slidingBuffer[i + HOP_LENGTH]
+                                slidingBuffer[i] = slidingBuffer[i + MFCCMatcher.HOP_LENGTH]
                             }
                             slidingBufferCount = remaining
                         }
@@ -247,7 +252,7 @@ class AudioAnalysisService : Service() {
                 val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
                 if (dir != null) {
                     val file = File(dir, fileName)
-                    com.example.audiometer.utils.WavUtil.saveWav(file, audioData)
+                    com.example.audiometer.utils.WavUtil.saveWav(file, audioData, MFCCMatcher.SAMPLE_RATE)
                     savedPath = file.absolutePath
                     AnalysisStateHolder.addLog("Saved to $fileName")
                 }
