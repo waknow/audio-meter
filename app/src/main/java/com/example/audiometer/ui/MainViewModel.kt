@@ -279,8 +279,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         android.util.Log.d("MainViewModel", "Starting offline analysis for: ${file.absolutePath}")
         
         val matches = mutableListOf<OfflineAnalysisResult>()
-        val frameSize = 1024
-        val hopLength = 256  // 与 Python 一致的帧移
 
         // 1. Get Input File Info FIRST (需要获取真实采样率)
         val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
@@ -381,8 +379,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             longAudio = inputFloats,
             sampleAudio = targetFloats,
             sampleRate = actualSampleRate,  // ✅ 使用实际采样率
-            frameSize = frameSize,
-            hopLength = hopLength,
+            frameSize = com.example.audiometer.utils.MFCCMatcher.FRAME_SIZE,
+            hopLength = com.example.audiometer.utils.MFCCMatcher.HOP_LENGTH,
             threshold = euclideanThreshold,  // 直接使用欧氏距离阈值
             onProgress = onProgress  // 传递进度回调
         )
