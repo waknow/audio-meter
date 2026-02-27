@@ -42,6 +42,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
+private const val CHART_UPDATE_INTERVAL_MS = 33L
+private const val CHART_EMA_PREVIOUS_WEIGHT = 0.75f
+private const val CHART_EMA_CURRENT_WEIGHT = 0.25f
+private const val CHART_MAX_POINTS = 90
+private const val CHART_MOVING_AVERAGE_WINDOW = 3
+
 @Composable
 fun RealTimeScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
@@ -70,10 +76,11 @@ fun RealTimeScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(similarity, isRunning) {
         if (isRunning) {
             val now = System.currentTimeMillis()
-            if (now - lastChartUpdateMs >= 33L) { // ~30 FPS
+            if (now - lastChartUpdateMs >= CHART_UPDATE_INTERVAL_MS) { // 约 30Hz 刷新
                 val previous = chartData.lastOrNull() ?: similarity
-                val smoothed = previous * 0.75f + similarity * 0.25f
-                chartData = (chartData + smoothed).takeLast(90) // 保留最近 90 个点
+                // EMA：历史值 75%，当前值 25%，降低抖动同时保留响应速度
+                val smoothed = previous * CHART_EMA_PREVIOUS_WEIGHT + similarity * CHART_EMA_CURRENT_WEIGHT
+                chartData = (chartData + smoothed).takeLast(CHART_MAX_POINTS) // 最大保留窗口 90 点
                 lastChartUpdateMs = now
             }
         } else if (chartData.isNotEmpty()) {
@@ -377,7 +384,7 @@ private fun smoothChartData(data: List<Float>, windowSize: Int): List<Float> {
 fun ModernTrendChart(data: List<Float>, threshold: Float, modifier: Modifier = Modifier) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val errorColor = MaterialTheme.colorScheme.error
-    val displayData = remember(data) { smoothChartData(data, windowSize = 3) }
+    val displayData = remember(data) { smoothChartData(data, windowSize = CHART_MOVING_AVERAGE_WINDOW) }
     
     Canvas(modifier = modifier) {
         val width = size.width
@@ -409,14 +416,11 @@ fun ModernTrendChart(data: List<Float>, threshold: Float, modifier: Modifier = M
             fillPath.moveTo(points.first().x, height)
             fillPath.lineTo(points.first().x, points.first().y)
 
-            // 使用三次贝塞尔曲线平滑图表
+            // 使用平滑后数据绘制主路径
             for (i in 0 until points.size - 1) {
-                val p0 = points[i]
-                val p1 = points[i + 1]
-                val controlX = (p0.x + p1.x) / 2
-                val controlY = (p0.y + p1.y) / 2
-                path.quadraticTo(controlX, p0.y, p1.x, p1.y)
-                fillPath.quadraticTo(controlX, controlY, p1.x, p1.y)
+                val nextPoint = points[i + 1]
+                path.lineTo(nextPoint.x, nextPoint.y)
+                fillPath.lineTo(nextPoint.x, nextPoint.y)
             }
             
             val last = points.last()
