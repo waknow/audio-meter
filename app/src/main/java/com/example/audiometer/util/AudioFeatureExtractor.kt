@@ -1,4 +1,4 @@
-package com.example.audiometer.utils
+package com.example.audiometer.util
 
 import be.tarsos.dsp.mfcc.MFCC
 import kotlin.math.max
@@ -104,41 +104,5 @@ class AudioFeatureExtractor {
         return max(0f, similarity * 100)
     }
 
-    /**
-     * Calculates the RMS (Volume) of a signal.
-     */
-    fun calculateRMS(buffer: ShortArray): Float {
-        var sum = 0.0
-        for (sample in buffer) {
-            sum += sample * (sample.toDouble())
-        }
-        return sqrt(sum / buffer.size).toFloat()
-    }
-
-    /**
-     * Computes the average MFCC vector for a longer signal.
-     */
-    fun computeAverageMFCC(signal: FloatArray, frameSize: Int = 1024, sampleRate: Float = 16000f): FloatArray {
-        if (signal.size < frameSize) return FloatArray(13)
-
-        val numChunks = signal.size / frameSize
-        val avgMFCC = FloatArray(13)
-
-        for (i in 0 until numChunks) {
-            val chunk = FloatArray(frameSize)
-            System.arraycopy(signal, i * frameSize, chunk, 0, frameSize)
-            val mfcc = calculateMFCC(chunk, sampleRate)
-            for (j in mfcc.indices) {
-                if (j < avgMFCC.size) {
-                    avgMFCC[j] += mfcc[j]
-                }
-            }
-        }
-
-        for (j in avgMFCC.indices) {
-            avgMFCC[j] /= numChunks
-        }
-
-        return avgMFCC
-    }
 }
+

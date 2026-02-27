@@ -11,8 +11,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.audiometer.AudioMeterApplication
 import com.example.audiometer.data.ValidationRecord
 import com.example.audiometer.service.AudioAnalysisService
-import com.example.audiometer.utils.AnalysisStateHolder
-import com.example.audiometer.utils.MFCCMatcher
+import com.example.audiometer.util.AnalysisStateHolder
+import com.example.audiometer.util.MFCCMatcher
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -28,7 +28,7 @@ data class OfflineAnalysisResult(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val db = (application as AudioMeterApplication).database
     private val configRepo = (application as AudioMeterApplication).configRepository
-    private val simulator = com.example.audiometer.RealTimeLogicSimulator(application)
+    private val simulator = com.example.audiometer.service.RealTimeLogicSimulator(application)
 
     val isRunning = AnalysisStateHolder.isRunning
     val currentSimilarity = AnalysisStateHolder.currentSimilarity
@@ -38,6 +38,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val currentDistance = AnalysisStateHolder.currentDistance
     val audioLevel = AnalysisStateHolder.audioLevel
     val lastProcessedTime = AnalysisStateHolder.lastProcessedTime
+    val simulationProgress = AnalysisStateHolder.simulationProgress
 
     // Player state
     private var mediaPlayer: MediaPlayer? = null
@@ -49,12 +50,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var isOfflineFilePlaying by mutableStateOf(false)
         internal set
 
+    /** 当前正在播放的历史记录 ID，null 表示未播放 */
+    var playingRecordId by mutableStateOf<Int?>(null)
+        internal set
+
     // Offline Results persistence
     var offlineResults by mutableStateOf<List<OfflineAnalysisResult>>(emptyList())
         internal set
-    var offlineWavInfo by mutableStateOf<com.example.audiometer.utils.WavInfo?>(null)
+    var offlineWavInfo by mutableStateOf<com.example.audiometer.util.WavInfo?>(null)
         internal set
-    var sampleWavInfo by mutableStateOf<com.example.audiometer.utils.WavInfo?>(null)
+    var sampleWavInfo by mutableStateOf<com.example.audiometer.util.WavInfo?>(null)
         internal set
     var offlineResultMessage by mutableStateOf("Select a file to analyze")
         internal set
@@ -223,6 +228,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         mediaPlayer = null
         isOfflineFilePlaying = false
+        playingRecordId = null
+    }
+
+    /**
+     * 播放 / 停止历史记录的告警音频。
+     * 告警文件本身是截取的片段，从头播放即可。
+     */
+    fun playRecord(record: ValidationRecord) {
+        if (playingRecordId == record.id) {
+            // 再次点击 → 停止
+            stopPlayback()
+            return
+        }
+        val path = record.audioPath ?: return
+        val file = java.io.File(path)
+        if (!file.exists()) return
+        stopPlayback()
+        try {
+            playingRecordId = record.id
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
+                prepare()
+                start()
+                setOnCompletionListener {
+                    it.release()
+                    mediaPlayer = null
+                    playingRecordId = null
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            playingRecordId = null
+        }
     }
 
     fun clearOfflineResults() {
@@ -242,11 +281,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleService() {
         val context = getApplication<AudioMeterApplication>()
         if (isRunning.value) {
+            // Stop both simulator and service; one of them will be active
             simulator.stop()
-            val intent = Intent(context, AudioAnalysisService::class.java).apply {
-                action = "STOP"
-            }
-            context.startService(intent)
+            context.startService(
+                Intent(context, AudioAnalysisService::class.java).apply { action = "STOP" }
+            )
         } else {
             val intent = Intent(context, AudioAnalysisService::class.java)
             context.startForegroundService(intent)
@@ -274,14 +313,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun analyzeOfflineFile(
         file: java.io.File,
         onProgress: (Float) -> Unit
-    ): Pair<com.example.audiometer.utils.WavInfo?, List<OfflineAnalysisResult>> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+    ): Pair<com.example.audiometer.util.WavInfo?, List<OfflineAnalysisResult>> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
         currentAnalyzedFile = file
         android.util.Log.d("MainViewModel", "Starting offline analysis for: ${file.absolutePath}")
         
         val matches = mutableListOf<OfflineAnalysisResult>()
 
         // 1. Get Input File Info FIRST (需要获取真实采样率)
-        val wavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(file)
+        val wavInfo = com.example.audiometer.util.WavUtil.getWavInfo(file)
         if (wavInfo == null) {
             android.util.Log.e("MainViewModel", "Failed to read WAV info from file")
             offlineResultMessage = "Invalid WAV file"
@@ -311,7 +350,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         android.util.Log.d("MainViewModel", "Offline file: ${file.absolutePath} (${file.length()} bytes)")
 
         // 获取样本文件的采样率信息
-        val targetWavInfo = com.example.audiometer.utils.WavUtil.getWavInfo(targetFile)
+        val targetWavInfo = com.example.audiometer.util.WavUtil.getWavInfo(targetFile)
         
         // 如果采样率读取失败或为 0，尝试根据样本数估算
         var estimatedSampleRate: Int? = null
@@ -332,7 +371,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             // 创建估算的 WavInfo
             val estimatedDuration = (estimatedSamples * 1000.0 / estimatedSampleRate).toLong()
-            sampleWavInfo = com.example.audiometer.utils.WavInfo(
+            sampleWavInfo = com.example.audiometer.util.WavInfo(
                 sampleRate = estimatedSampleRate,
                 channels = 1,
                 bitDepth = 16,
@@ -350,7 +389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Load sample audio
-        val targetSamples = com.example.audiometer.utils.WavUtil.loadWav(targetFile)
+        val targetSamples = com.example.audiometer.util.WavUtil.loadWav(targetFile)
         if (targetSamples.isEmpty()) {
             android.util.Log.e("MainViewModel", "Failed to load sample audio")
             offlineResultMessage = "Could not load sample"
@@ -360,7 +399,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         android.util.Log.d("MainViewModel", "Loaded sample: ${targetSamples.size} samples")
 
         // 2. Load Input File
-        val inputSamples = com.example.audiometer.utils.WavUtil.loadWav(file)
+        val inputSamples = com.example.audiometer.util.WavUtil.loadWav(file)
         if (inputSamples.isEmpty()) {
             android.util.Log.e("MainViewModel", "Failed to load offline file")
             offlineResultMessage = "Could not load analysis file"
@@ -375,12 +414,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         
         // 使用 MFCCMatcher.detectMatches（包含完整的去重逻辑）
         // ⚠️ 使用实际文件的采样率，而不是硬编码 16000
-        val matchResults = com.example.audiometer.utils.MFCCMatcher.detectMatches(
+        val matchResults = com.example.audiometer.util.MFCCMatcher.detectMatches(
             longAudio = inputFloats,
             sampleAudio = targetFloats,
             sampleRate = actualSampleRate,  // ✅ 使用实际采样率
-            frameSize = com.example.audiometer.utils.MFCCMatcher.FRAME_SIZE,
-            hopLength = com.example.audiometer.utils.MFCCMatcher.HOP_LENGTH,
+            frameSize = com.example.audiometer.util.MFCCMatcher.FRAME_SIZE,
+            hopLength = com.example.audiometer.util.MFCCMatcher.HOP_LENGTH,
             threshold = euclideanThreshold,  // 直接使用欧氏距离阈值
             onProgress = onProgress  // 传递进度回调
         )

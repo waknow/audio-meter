@@ -1,4 +1,4 @@
-package com.example.audiometer.utils
+package com.example.audiometer.util
 
 import kotlin.math.sqrt
 
@@ -7,6 +7,12 @@ import kotlin.math.sqrt
  * 用于离线分析和调试
  */
 object MFCCMatcher {
+
+    data class FrameCompareResult(
+        val similarity: Float,
+        val distance: Float,
+        val audioLevel: Float
+    )
 
     // ── 共享 MFCC 参数常量（所有调用方统一使用这些值）──────────────────────
     const val SAMPLE_RATE = 16000   // 采样率（与 Python librosa 对齐）
@@ -36,6 +42,44 @@ object MFCCMatcher {
     ): FloatArray {
         val mfcc = extractor.calculateMFCC(chunk, sampleRate)
         return mfcc.sliceArray(1 until mfcc.size)
+    }
+
+    /**
+     * 统一的单帧比较逻辑：输入一帧音频，与已提取的样本 MFCC 对比，输出相似度、距离、能量。
+     * 实时录音与模拟回放共用此方法，确保两条链路完全一致。
+     */
+    fun evaluateFrame(
+        chunk: FloatArray,
+        bestSampleMFCC: FloatArray?,
+        extractor: AudioFeatureExtractor,
+        sampleRate: Float = SAMPLE_RATE.toFloat()
+    ): FrameCompareResult {
+        val audioLevel = extractor.calculateEnergy(chunk)
+        val mfccWithoutC0 = extractFrameMFCC(chunk, extractor, sampleRate)
+        return evaluateFeatures(mfccWithoutC0, audioLevel, bestSampleMFCC)
+    }
+
+    /**
+     * 仅基于已计算好的特征向量进行比较，便于单元测试。
+     */
+    fun evaluateFeatures(
+        frameMFCCWithoutC0: FloatArray,
+        audioLevel: Float,
+        bestSampleMFCC: FloatArray?
+    ): FrameCompareResult {
+        val distance = if (bestSampleMFCC != null) {
+            calculateEuclideanDistance(frameMFCCWithoutC0, bestSampleMFCC)
+        } else {
+            Float.MAX_VALUE
+        }
+
+        val similarity = if (distance < Float.MAX_VALUE) {
+            maxOf(0f, 100f - (distance / 70f * 100f))
+        } else {
+            0f
+        }
+
+        return FrameCompareResult(similarity, distance, audioLevel)
     }
 
     /**

@@ -1,4 +1,4 @@
-package com.example.audiometer.utils
+package com.example.audiometer.util
 
 /**
  * Real-time match event counter:

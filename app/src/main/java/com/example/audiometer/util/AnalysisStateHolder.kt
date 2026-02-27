@@ -1,4 +1,4 @@
-package com.example.audiometer.utils
+package com.example.audiometer.util
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +30,14 @@ object AnalysisStateHolder {
     private val _lastProcessedTime = MutableStateFlow(0L)
     val lastProcessedTime: StateFlow<Long> = _lastProcessedTime
 
+    /** 模拟测试进度 0.0..1.0，非模拟时为 0 */
+    private val _simulationProgress = MutableStateFlow(0f)
+    val simulationProgress: StateFlow<Float> = _simulationProgress
+
+    fun updateSimulationProgress(progress: Float) {
+        _simulationProgress.value = progress.coerceIn(0f, 1f)
+    }
+
     fun updateSimilarity(similarity: Float, distance: Float = 0f, audioLevel: Float = 0f) {
         _currentSimilarity.value = similarity
         _currentDistance.value = distance
@@ -53,6 +61,7 @@ object AnalysisStateHolder {
             _currentSimilarity.value = 0f
             _currentDistance.value = 0f
             _audioLevel.value = 0f
+            _simulationProgress.value = 0f
         }
     }
 
