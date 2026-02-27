@@ -71,9 +71,10 @@ class RealTimeLogicSimulator(private val context: Context) {
                     AnalysisStateHolder.updateSimilarity(similarityPercentage, distance, audioLevel)
 
                     // 记录匹配（与实时服务逻辑一致：防抖去重）
+                    val audioPositionMs = (offset * 1000.0 / MFCCMatcher.SAMPLE_RATE).toLong()
                     if (matchEventCounter.shouldTrigger(
                             isMatched = distance < threshold,
-                            nowMs = System.currentTimeMillis(),
+                            nowMs = audioPositionMs,
                             minIntervalMs = sampleIntervalMs
                         )
                     ) {
