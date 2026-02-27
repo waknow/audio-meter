@@ -3,6 +3,7 @@ package com.example.audiometer
 import android.content.Context
 import com.example.audiometer.utils.AnalysisStateHolder
 import com.example.audiometer.utils.AudioFeatureExtractor
+import com.example.audiometer.utils.MatchEventCounter
 import com.example.audiometer.utils.MFCCMatcher
 import com.example.audiometer.utils.WavUtil
 import kotlinx.coroutines.*
@@ -45,7 +46,7 @@ class RealTimeLogicSimulator(private val context: Context) {
 
                 // 3. 模拟实时处理循环 (模拟 startAnalysis 内部的 while 循环)
                 var offset = 0
-                var lastMatchTime = 0L
+                val matchEventCounter = MatchEventCounter()
                 val threshold = configRepo.similarityThreshold
                 val sampleIntervalMs = configRepo.sampleIntervalMs
                 while (offset + MFCCMatcher.FRAME_SIZE <= inputData.size) {
@@ -70,9 +71,13 @@ class RealTimeLogicSimulator(private val context: Context) {
                     AnalysisStateHolder.updateSimilarity(similarityPercentage, distance, audioLevel)
 
                     // 记录匹配（与实时服务逻辑一致：防抖去重）
-                    val currentTime = System.currentTimeMillis()
-                    if (distance < threshold && currentTime - lastMatchTime > sampleIntervalMs) {
-                        lastMatchTime = currentTime
+                    val audioPositionMs = (offset * 1000.0 / MFCCMatcher.SAMPLE_RATE).toLong()
+                    if (matchEventCounter.shouldTrigger(
+                            isMatched = distance < threshold,
+                            nowMs = audioPositionMs,
+                            minIntervalMs = sampleIntervalMs
+                        )
+                    ) {
                         AnalysisStateHolder.incrementMatchCount()
                     }
 

@@ -42,6 +42,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
+private const val CHART_UPDATE_INTERVAL_MS = 33L
+private const val CHART_EMA_PREVIOUS_WEIGHT = 0.75f
+private const val CHART_EMA_CURRENT_WEIGHT = 0.25f
+private const val CHART_MAX_POINTS = 90
+private const val CHART_MOVING_AVERAGE_WINDOW = 3
+
 @Composable
 fun RealTimeScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
@@ -66,9 +72,17 @@ fun RealTimeScreen(viewModel: MainViewModel = viewModel()) {
 
     // 图表数据状态
     var chartData by remember { mutableStateOf(listOf<Float>()) }
-    LaunchedEffect(similarity) {
+    var lastChartUpdateMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(similarity, isRunning) {
         if (isRunning) {
-            chartData = (chartData + similarity).takeLast(60) // 保留最近 60 个点
+            val now = System.currentTimeMillis()
+            if (now - lastChartUpdateMs >= CHART_UPDATE_INTERVAL_MS) { // 约 30Hz 刷新
+                val previous = chartData.lastOrNull() ?: similarity
+                // EMA：历史值 75%，当前值 25%，降低抖动同时保留响应速度
+                val smoothed = previous * CHART_EMA_PREVIOUS_WEIGHT + similarity * CHART_EMA_CURRENT_WEIGHT
+                chartData = (chartData + smoothed).takeLast(CHART_MAX_POINTS) // 最大保留窗口 90 点
+                lastChartUpdateMs = now
+            }
         } else if (chartData.isNotEmpty()) {
             chartData = emptyList()
         }
@@ -357,17 +371,25 @@ fun SimilarityGauge(value: Float, threshold: Float, modifier: Modifier = Modifie
     }
 }
 
+private fun smoothChartData(data: List<Float>, windowSize: Int): List<Float> {
+    if (data.isEmpty() || windowSize <= 1) return data
+    return data.indices.map { index ->
+        val start = (index - windowSize + 1).coerceAtLeast(0)
+        val window = data.subList(start, index + 1)
+        window.average().toFloat()
+    }
+}
+
 @Composable
 fun ModernTrendChart(data: List<Float>, threshold: Float, modifier: Modifier = Modifier) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val errorColor = MaterialTheme.colorScheme.error
-    val onSurface = MaterialTheme.colorScheme.onSurfaceVariant
+    val displayData = remember(data) { smoothChartData(data, windowSize = CHART_MOVING_AVERAGE_WINDOW) }
     
     Canvas(modifier = modifier) {
         val width = size.width
         val height = size.height
-        val maxPoints = 60
-        val stepX = width / (maxPoints - 1)
+        val pointsCount = displayData.size
 
         // Draw Threshold Dash Line
         val threshY = height - (threshold / 100f * height)
@@ -379,11 +401,12 @@ fun ModernTrendChart(data: List<Float>, threshold: Float, modifier: Modifier = M
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f))
         )
 
-        if (data.size > 1) {
+        if (pointsCount > 1) {
+            val stepX = width / (pointsCount - 1)
             val path = Path()
             val fillPath = Path()
             
-            val points = data.mapIndexed { index, value ->
+            val points = displayData.mapIndexed { index, value ->
                 val x = index * stepX
                 val y = height - (value / 100f * height)
                 androidx.compose.ui.geometry.Offset(x, y)
@@ -393,13 +416,11 @@ fun ModernTrendChart(data: List<Float>, threshold: Float, modifier: Modifier = M
             fillPath.moveTo(points.first().x, height)
             fillPath.lineTo(points.first().x, points.first().y)
 
-            // 使用三次贝塞尔曲线平滑图表
+            // 使用平滑后数据绘制主路径
             for (i in 0 until points.size - 1) {
-                val p0 = points[i]
-                val p1 = points[i + 1]
-                val controlX = (p0.x + p1.x) / 2
-                path.quadraticTo(p0.x, p0.y, controlX, (p0.y + p1.y) / 2)
-                fillPath.quadraticTo(p0.x, p0.y, controlX, (p0.y + p1.y) / 2)
+                val nextPoint = points[i + 1]
+                path.lineTo(nextPoint.x, nextPoint.y)
+                fillPath.lineTo(nextPoint.x, nextPoint.y)
             }
             
             val last = points.last()
