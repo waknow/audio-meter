@@ -18,6 +18,7 @@ import com.example.audiometer.data.ConfigRepository
 import com.example.audiometer.data.ValidationRecord
 import com.example.audiometer.utils.AnalysisStateHolder
 import com.example.audiometer.utils.AudioFeatureExtractor
+import com.example.audiometer.utils.MatchEventCounter
 import com.example.audiometer.utils.MFCCMatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -165,7 +166,7 @@ class AudioAnalysisService : Service() {
                 val slidingBuffer = ShortArray(MFCCMatcher.FRAME_SIZE * 2) // 较大的滑动窗口缓冲区
                 var slidingBufferCount = 0
                 
-                var lastAlertTime = 0L
+                val matchEventCounter = MatchEventCounter()
 
                 while (isRunning) {
                     val readResult = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: 0
@@ -212,13 +213,14 @@ class AudioAnalysisService : Service() {
                             }
                             frameCount++
 
-                            if (distance < configRepo.similarityThreshold) {
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastAlertTime > configRepo.sampleIntervalMs) {
-                                    lastAlertTime = currentTime
-                                    AnalysisStateHolder.incrementMatchCount()
-                                    handleAlert(similarity, slidingBuffer.sliceArray(0 until MFCCMatcher.FRAME_SIZE))
-                                }
+                            if (matchEventCounter.shouldTrigger(
+                                    isMatched = distance < configRepo.similarityThreshold,
+                                    nowMs = System.currentTimeMillis(),
+                                    minIntervalMs = configRepo.sampleIntervalMs
+                                )
+                            ) {
+                                AnalysisStateHolder.incrementMatchCount()
+                                handleAlert(similarity, slidingBuffer.sliceArray(0 until MFCCMatcher.FRAME_SIZE))
                             }
                             
                             // 每次移动 HOP_LENGTH
@@ -334,5 +336,4 @@ class AudioAnalysisService : Service() {
         notificationManager.createNotificationChannel(channel)
     }
 }
-
 
