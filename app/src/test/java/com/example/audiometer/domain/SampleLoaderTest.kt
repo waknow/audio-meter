@@ -1,6 +1,7 @@
 package com.example.audiometer.domain
 
-import com.example.audiometer.utils.AudioFeatureExtractor
+import com.example.audiometer.service.SampleLoader
+import com.example.audiometer.util.AudioFeatureExtractor
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.io.File

@@ -1,7 +1,7 @@
 package com.example.audiometer
 
-import com.example.audiometer.utils.AudioFeatureExtractor
-import com.example.audiometer.utils.MFCCMatcher
+import com.example.audiometer.util.AudioFeatureExtractor
+import com.example.audiometer.util.MFCCMatcher
 import org.junit.Test
 import org.junit.Assert.*
 
@@ -166,7 +166,7 @@ class ThresholdLogicTest {
             return
         }
         
-        val sampleData = com.example.audiometer.utils.WavUtil.loadWav(sampleFile)
+        val sampleData = com.example.audiometer.util.WavUtil.loadWav(sampleFile)
         if (sampleData.isEmpty()) {
             println("⚠️ Could not load sample.wav, skipping integration test")
             println("✅ MFCCMatcher integration test skipped (load failed)")

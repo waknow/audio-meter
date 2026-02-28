@@ -121,12 +121,22 @@ object MFCCMatcher {
         // 改进：不再使用简单的平均值，而是寻找样本中能量最强的帧作为指纹
         // 这比包含静音边缘的平均值更鲁棒
         val bestSampleMFCC = findBestRepresentativeMFCC(resampledSample, frameSize, targetSr, extractor) ?: averageMFCC(sampleMFCCs)
-        
-        // 3. 滑动窗口扫描重采样后的长音频
+
+        // ── CMS 归一化（与 AudioAnalysisEngine 保持一致的处理方式） ──
+        // 样本侧：用样本自身所有帧的均值做 CMS
+        val sampleMean = averageMFCC(sampleMFCCs)
+        val cmsSampleBest = FloatArray(bestSampleMFCC.size) { bestSampleMFCC[it] - sampleMean[it] }
+
+        // 3. 滑动窗口扫描重采样后的长音频（使用 CMS）
         val matches = mutableListOf<MatchResult>()
         var pos = 0
         var frameIdx = 0
         var lastProgress = 0f
+
+        // 长音频侧：维护滑动窗口 CMS
+        val cmsWindowSize = 200   // 与 AudioAnalysisEngine.CMS_WINDOW_SIZE 一致
+        val cmsWarmup = 50        // 与 AudioAnalysisEngine.CMS_WARMUP_FRAMES 一致
+        val cmsBuffer = ArrayDeque<FloatArray>()
         
         while (pos + frameSize <= resampledLong.size) {
             // 更新进度
@@ -139,9 +149,23 @@ object MFCCMatcher {
             // 提取当前帧的 MFCC（统一通过 extractFrameMFCC）
             val chunk = resampledLong.sliceArray(pos until pos + frameSize)
             val currentMFCCWithoutC0 = extractFrameMFCC(chunk, extractor, targetSr)
-            
-            // 与样本的最强特征对比
-            val distance = extractor.calculateEuclideanDistance(currentMFCCWithoutC0, bestSampleMFCC)
+
+            // CMS 归一化
+            cmsBuffer.addLast(currentMFCCWithoutC0.copyOf())
+            if (cmsBuffer.size > cmsWindowSize) cmsBuffer.removeFirst()
+
+            val distance = if (cmsBuffer.size >= cmsWarmup) {
+                val cmsMean = FloatArray(currentMFCCWithoutC0.size)
+                for (mfcc in cmsBuffer) {
+                    for (i in mfcc.indices) cmsMean[i] += mfcc[i]
+                }
+                for (i in cmsMean.indices) cmsMean[i] /= cmsBuffer.size
+                val cmsNormalized = FloatArray(currentMFCCWithoutC0.size) { currentMFCCWithoutC0[it] - cmsMean[it] }
+                extractor.calculateEuclideanDistance(cmsNormalized, cmsSampleBest)
+            } else {
+                // 预热阶段使用 raw 距离
+                extractor.calculateEuclideanDistance(currentMFCCWithoutC0, bestSampleMFCC)
+            }
             
             if (distance < threshold) {
                 val timeSeconds = (pos.toDouble() / targetSr)
@@ -253,6 +277,30 @@ object MFCCMatcher {
             pos += hop
         }
         return bestMFCC
+    }
+
+    /**
+     * 计算音频所有帧的平均 MFCC 向量（用于 CMS 倒谱均值减法）。
+     *
+     * 对每帧提取 MFCC（C1–C12），取所有帧的算术平均。
+     * 该均值代表音频中静态的频谱形状（主要由录音信道决定），
+     * 从各帧中减去它即可消除信道偏移，只保留声源的动态特征。
+     */
+    fun computeMeanMFCC(
+        audio: FloatArray,
+        extractor: AudioFeatureExtractor,
+        frameSize: Int = FRAME_SIZE,
+        hopLength: Int = HOP_LENGTH,
+        sampleRate: Float = SAMPLE_RATE.toFloat()
+    ): FloatArray {
+        val mfccs = mutableListOf<FloatArray>()
+        var pos = 0
+        while (pos + frameSize <= audio.size) {
+            val chunk = audio.sliceArray(pos until pos + frameSize)
+            mfccs.add(extractFrameMFCC(chunk, extractor, sampleRate))
+            pos += hopLength
+        }
+        return averageMFCC(mfccs)
     }
 
     /**

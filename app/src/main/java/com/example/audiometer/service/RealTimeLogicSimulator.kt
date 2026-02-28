@@ -1,6 +1,7 @@
 package com.example.audiometer.service
 
 import android.content.Context
+import com.example.audiometer.AudioMeterApplication
 import com.example.audiometer.service.FileAudioSource
 import com.example.audiometer.service.AudioAnalysisEngine
 import com.example.audiometer.service.SampleLoader
@@ -31,8 +32,8 @@ class RealTimeLogicSimulator(context: Context) {
                 AnalysisStateHolder.resetStats()
                 AnalysisStateHolder.addLog("--- SIMULATION START ---")
 
-                val bestSampleMFCC = SampleLoader.load(sampleFile, featureExtractor)
-                if (bestSampleMFCC == null) {
+                val fingerprint = SampleLoader.load(sampleFile, featureExtractor)
+                if (fingerprint == null) {
                     AnalysisStateHolder.addLog("Simulation Error: Could not find best sample frame")
                     return@launch
                 }
@@ -45,7 +46,7 @@ class RealTimeLogicSimulator(context: Context) {
                     getIntervalMs = { configRepo.sampleIntervalMs },
                 )
 
-                engine.run(FileAudioSource(inputAudioFile, realtimePacing = true), bestSampleMFCC, isSimulation = true)
+                engine.run(FileAudioSource(inputAudioFile, realtimePacing = true), fingerprint, isSimulation = true)
 
                 AnalysisStateHolder.addLog("--- SIMULATION END ---")
                 AnalysisStateHolder.setRunning(false)

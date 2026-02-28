@@ -1,6 +1,6 @@
 package com.example.audiometer
 
-import com.example.audiometer.utils.MatchEventCounter
+import com.example.audiometer.util.MatchEventCounter
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test

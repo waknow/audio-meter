@@ -92,15 +92,15 @@ class AudioAnalysisService : Service() {
                     return@launch
                 }
                 val sampleFile = File(samplePath)
-                val bestSampleMFCC = SampleLoader.load(sampleFile, featureExtractor)
-                if (bestSampleMFCC == null) {
+                val fingerprint = SampleLoader.load(sampleFile, featureExtractor)
+                if (fingerprint == null) {
                     AnalysisStateHolder.addLog("Failed to load sample fingerprint")
                     return@launch
                 }
                 AnalysisStateHolder.addLog("Sample Loaded: ${sampleFile.name}")
                 AnalysisStateHolder.addLog("Recording started")
 
-                engine.run(MicrophoneAudioSource(), bestSampleMFCC, isSimulation = false)
+                engine.run(MicrophoneAudioSource(), fingerprint, isSimulation = false)
             } catch (e: Exception) {
                 AnalysisStateHolder.addLog("Error: ${e.message}")
                 e.printStackTrace()

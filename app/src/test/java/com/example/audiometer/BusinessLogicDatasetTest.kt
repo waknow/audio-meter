@@ -1,7 +1,7 @@
 package com.example.audiometer
 
-import com.example.audiometer.utils.MFCCMatcher
-import com.example.audiometer.utils.WavUtil
+import com.example.audiometer.util.MFCCMatcher
+import com.example.audiometer.util.WavUtil
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

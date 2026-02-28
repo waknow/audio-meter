@@ -1,8 +1,10 @@
 package com.example.audiometer.domain
 
-import com.example.audiometer.datasource.AudioSource
-import com.example.audiometer.utils.AnalysisStateHolder
-import com.example.audiometer.utils.MFCCMatcher
+import com.example.audiometer.service.AudioSource
+import com.example.audiometer.service.AudioAnalysisEngine
+import com.example.audiometer.service.SampleFingerprint
+import com.example.audiometer.util.AnalysisStateHolder
+import com.example.audiometer.util.MFCCMatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -50,6 +52,10 @@ class AudioAnalysisEngineTest {
         getIntervalMs = { intervalMs },
     )
 
+    /** 构造一个简单的 SampleFingerprint，两个 MFCC 向量相同 */
+    private fun fakeFingerprint(mfcc: FloatArray): SampleFingerprint =
+        SampleFingerprint(bestMFCC = mfcc, cmsBestMFCC = mfcc)
+
     // ── 基础状态更新 ──────────────────────────────────────────────────────────
 
     @Test
@@ -60,16 +66,16 @@ class AudioAnalysisEngineTest {
     }
 
     @Test
-    fun `similarity is zero when bestSampleMFCC is null`() = runTest {
+    fun `similarity is zero when sampleFingerprint is null`() = runTest {
         val engine = makeEngine()
-        engine.run(singleFrameSource(), bestSampleMFCC = null)
+        engine.run(singleFrameSource(), sampleFingerprint = null)
         assertEquals(0f, AnalysisStateHolder.currentSimilarity.value, 0.001f)
     }
 
     @Test
-    fun `distance is max when bestSampleMFCC is null`() = runTest {
+    fun `distance is max when sampleFingerprint is null`() = runTest {
         val engine = makeEngine()
-        engine.run(singleFrameSource(), bestSampleMFCC = null)
+        engine.run(singleFrameSource(), sampleFingerprint = null)
         // evaluateFeatures returns Float.MAX_VALUE distance when no sampleMFCC
         assertEquals(Float.MAX_VALUE, AnalysisStateHolder.currentDistance.value, 0.001f)
     }
@@ -80,14 +86,14 @@ class AudioAnalysisEngineTest {
     fun `simulation progress reaches 1 after full run`() = runTest {
         val engine = makeEngine()
         val frames = List(10) { FloatArray(MFCCMatcher.FRAME_SIZE) }
-        engine.run(fakeSource(frames), bestSampleMFCC = null, isSimulation = true)
+        engine.run(fakeSource(frames), sampleFingerprint = null, isSimulation = true)
         assertEquals(1f, AnalysisStateHolder.simulationProgress.value, 0.01f)
     }
 
     @Test
     fun `simulation progress stays 0 when isSimulation is false`() = runTest {
         val engine = makeEngine()
-        engine.run(singleFrameSource(), bestSampleMFCC = null, isSimulation = false)
+        engine.run(singleFrameSource(), sampleFingerprint = null, isSimulation = false)
         assertEquals(0f, AnalysisStateHolder.simulationProgress.value, 0.001f)
     }
 
@@ -95,18 +101,14 @@ class AudioAnalysisEngineTest {
 
     @Test
     fun `matchCount increments when frame distance is below threshold`() = runTest {
-        // Use a zero-vector sample MFCC and a zero-vector frame → distance = 0 < threshold
         val sampleMFCC = FloatArray(12) { 0f }
         var callbackCount = 0
         val engine = makeEngine(
             onMatch = { _, _ -> callbackCount++ },
             threshold = 35f,
-            intervalMs = 0L,  // 无防抖
+            intervalMs = 0L,
         )
-        // A silent frame (all zeros) should produce distance ≈ 0 (after MFCC extraction)
-        engine.run(singleFrameSource(), bestSampleMFCC = sampleMFCC)
-        // No assertion on exact callback due to MFCC non-determinism with all-zero input,
-        // but totalChecks should always be 1
+        engine.run(singleFrameSource(), sampleFingerprint = fakeFingerprint(sampleMFCC))
         assertEquals(1, AnalysisStateHolder.totalChecks.value)
     }
 
@@ -114,13 +116,12 @@ class AudioAnalysisEngineTest {
     fun `onMatch callback is not invoked when null`() = runTest {
         val sampleMFCC = FloatArray(12) { 0f }
         var callbackFired = false
-        // Pass onMatch = null; ensure no NPE and stats still updated
         val engine = AudioAnalysisEngine(
             onMatch = null,
             getThreshold = { 35f },
             getIntervalMs = { 0L },
         )
-        engine.run(singleFrameSource(), bestSampleMFCC = sampleMFCC)
+        engine.run(singleFrameSource(), sampleFingerprint = fakeFingerprint(sampleMFCC))
         assertFalse(callbackFired)
         assertEquals(1, AnalysisStateHolder.totalChecks.value)
     }
@@ -142,7 +143,7 @@ class AudioAnalysisEngineTest {
         assertEquals(0, AnalysisStateHolder.totalChecks.value)
     }
 
-    // ── 防抖逻辑（simulaton 时间戳） ──────────────────────────────────────────
+    // ── 防抖逻辑（simulation 时间戳） ────────────────────────────────────────
 
     @Test
     fun `match count does not exceed 1 per silence gap without reset in simulation mode`() = runTest {
@@ -150,13 +151,11 @@ class AudioAnalysisEngineTest {
         val matchCounts = mutableListOf<Int>()
         val engine = AudioAnalysisEngine(
             onMatch = { _, _ -> matchCounts.add(AnalysisStateHolder.matchCount.value) },
-            getThreshold = { 1000f },  // 宽松阈值，几乎所有帧都匹配
-            getIntervalMs = { 5000L }, // 5s 防抖
+            getThreshold = { 1000f },
+            getIntervalMs = { 5000L },
         )
-        // 3 matching frames → with 5s debounce only the first should trigger
         val frames = List(3) { FloatArray(MFCCMatcher.FRAME_SIZE) }
-        engine.run(fakeSource(frames), bestSampleMFCC = sampleMFCC, isSimulation = true)
-        // At most 1 alert should have been dispatched due to debounce
+        engine.run(fakeSource(frames), sampleFingerprint = fakeFingerprint(sampleMFCC), isSimulation = true)
         assertTrue("Expected at most 1 match, got ${matchCounts.size}", matchCounts.size <= 1)
     }
 }
